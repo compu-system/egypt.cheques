@@ -184,3 +184,17 @@ user_data_fields = [
 # 	"ecs_cheques.auth.validate"
 # ]
 
+fixtures = [
+    {
+        "dt": "Property Setter",
+        "filters": [
+            ["module", "=", "ECS Cheques"]
+        ]
+    },
+    {
+        "dt": "Client Script",
+        "filters": [
+            ["module", "=", "ECS Cheques"]
+        ]
+    }
+]

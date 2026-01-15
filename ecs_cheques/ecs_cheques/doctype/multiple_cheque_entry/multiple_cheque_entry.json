@@ -56,8 +56,7 @@
    "fieldname": "company",
    "fieldtype": "Link",
    "label": "Company",
-   "options": "Company",
-   "read_only": 1
+   "options": "Company"
   },
   {
    "default": "Today",
@@ -270,7 +269,7 @@
    "link_fieldname": "reference_no"
   }
  ],
- "modified": "2025-12-19 11:42:16.071166",
+ "modified": "2025-12-23 17:39:57.428274",
  "modified_by": "Administrator",
  "module": "ECS Cheques",
  "name": "Multiple Cheque Entry",
