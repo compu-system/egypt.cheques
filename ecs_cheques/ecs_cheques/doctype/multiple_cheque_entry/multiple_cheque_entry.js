@@ -1209,3 +1209,4 @@ frappe.ui.form.on("Cheque Table Pay", "cheque_table_2_add", function(frm, cdt, c
     }
 });
 
+
