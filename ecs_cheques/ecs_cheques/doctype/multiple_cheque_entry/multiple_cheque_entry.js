@@ -534,9 +534,10 @@ frappe.ui.form.on('Multiple Cheque Entry', 'party_type', function(frm) {
 });
 // Validation
 frappe.ui.form.on("Multiple Cheque Entry", "validate", function(frm) {
-    if (frm.doc.mode_of_payment_type != "Cheque") {
-        frappe.throw("The Type Of The Selected Mode Of Payment Is Not Cheque ... Please Select Another Mode Of Payment With Cheque Type ");
-    }
+  // قم بتعطيل هذه الأسطر بوضع // قبلها
+// if (frm.doc.mode_of_payment_type != "Cheque") {
+//     frappe.throw("The Type Of The Selected Mode Of Payment Is Not Cheque...");
+// }
     
     // Validate child table data
     const isPay = frm.doc.payment_type === "Pay";
@@ -1207,3 +1208,4 @@ frappe.ui.form.on("Cheque Table Pay", "cheque_table_2_add", function(frm, cdt, c
         });
     }
 });
+
