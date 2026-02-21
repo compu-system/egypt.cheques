@@ -1,5 +1,20 @@
 frappe.ui.form.on("Payment Entry", {
     refresh(frm) {
+        // Exchange rate hint: when reference_no and target_exchange_rate are set,
+        // show a visual indicator: Exchange Rate: 1 ILS = (1 / target_exchange_rate) USD
+        if (frm.doc.reference_no && frm.doc.target_exchange_rate && frm.doc.target_exchange_rate !== 1) {
+            const rate = (1 / frm.doc.target_exchange_rate).toFixed(5);
+            frm.dashboard.add_comment(
+                __("Exchange Rate: 1 {0} = {1} {2}", [
+                    frm.doc.paid_from_account_currency || "ILS",
+                    rate,
+                    frm.doc.paid_to_account_currency || "USD"
+                ]),
+                "blue",
+                true
+            );
+        }
+
         // 1. حالة الشيك في حافظة الوارد - شيك مفتوح
         if (frm.doc.docstatus == "1" && frm.doc.mode_of_payment_type == "Cheque" && frm.doc.payment_type == "Receive" && frm.doc.cheque_type == "Opened" && frm.doc.cheque_status == "حافظة شيكات واردة"){
             set_field_options("cheque_action", ["رد شيك","تحويل إلى حافظة شيكات أخرى","تظهير شيك","إيداع شيك تحت التحصيل","تحصيل فوري للشيك"]);
