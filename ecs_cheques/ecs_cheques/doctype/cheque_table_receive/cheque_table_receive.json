@@ -11,7 +11,10 @@
   "reference_no",
   "reference_date",
   "cheque_type",
+  "cheque_currency",
   "paid_amount",
+  "target_exchange_rate",
+  "amount_in_company_currency",
   "first_beneficiary",
   "issuer_name",
   "payment_entry",
@@ -23,7 +26,6 @@
   "account_paid_from",
   "account_currency_from",
   "picture_of_check",
-  "target_exchange_rate",
   "party_name"
  ],
  "fields": [
@@ -65,8 +67,8 @@
   {
    "columns": 1,
    "fieldname": "account_currency",
-   "fieldtype": "Data",
-   "label": "Account Currency",
+   "fieldtype": "Link",
+   "label": "Account Currency (To)",
    "options": "Currency",
    "read_only": 1
   },
@@ -157,7 +159,7 @@
   },
   {
    "columns": 1,
-   "default": "1310 - \u0645\u062f\u064a\u0646\u0648\u0646 - O",
+   "default": "1310 - مدينون - O",
    "fieldname": "account_paid_from",
    "fieldtype": "Link",
    "in_list_view": 1,
@@ -182,6 +184,22 @@
    "fieldname": "party_name",
    "fieldtype": "Data",
    "label": "Party Name",
+   "read_only": 1
+  },
+  {
+   "columns": 1,
+   "fieldname": "cheque_currency",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Cheque Currency",
+   "options": "Currency"
+  },
+  {
+   "columns": 1,
+   "fieldname": "amount_in_company_currency",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "Amount (Company Currency)",
    "read_only": 1
   }
  ],

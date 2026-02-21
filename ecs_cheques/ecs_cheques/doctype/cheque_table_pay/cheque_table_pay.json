@@ -11,9 +11,12 @@
   "account_paid_to",
   "reference_no",
   "reference_date",
-  "paid_amount",
-  "column_break_6",
   "cheque_type",
+  "cheque_currency",
+  "paid_amount",
+  "target_exchange_rate",
+  "amount_in_company_currency",
+  "column_break_6",
   "first_beneficiary",
   "person_name",
   "issuer_name",
@@ -21,7 +24,7 @@
   "account_currency_from",
   "party_type",
   "account_currency",
-  "target_exchange_rate"
+  "payment_entry"
  ],
  "fields": [
   {
@@ -155,6 +158,30 @@
    "fieldname": "target_exchange_rate",
    "fieldtype": "Float",
    "label": "Exchange Rate"
+  },
+  {
+   "columns": 1,
+   "fieldname": "cheque_currency",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Cheque Currency",
+   "options": "Currency"
+  },
+  {
+   "columns": 1,
+   "fieldname": "amount_in_company_currency",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "Amount (Company Currency)",
+   "read_only": 1
+  },
+  {
+   "allow_on_submit": 1,
+   "fieldname": "payment_entry",
+   "fieldtype": "Link",
+   "label": "Payment Entry",
+   "options": "Payment Entry",
+   "read_only": 1
   }
  ],
  "index_web_pages_for_search": 1,
