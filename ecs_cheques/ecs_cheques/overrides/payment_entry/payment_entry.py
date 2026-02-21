@@ -68,6 +68,77 @@ def _needs_multi_currency(account_names, company_currency):
             return True
     return False
 
+
+def _get_cheque_paid_amount(doc, company_currency):
+    """Return paid_amount expressed in company currency, derived from Cheque Table Receive.
+
+    For Receive-type Payment Entries that are linked to a Cheque Table Receive row
+    (via doc.cheque_table_no), the canonical amount for the Journal Entry must be
+    Cheque Table Receive.paid_amount × Cheque Table Receive.target_exchange_rate.
+    Using doc.paid_amount × source_exchange_rate can produce an incorrect base
+    amount when the exchange rate on the Payment Entry was stored incorrectly
+    (e.g. set to 1 instead of the actual rate), which then causes ERPNext's JE
+    validation to re-fetch the real rate for one account but not the other,
+    resulting in a debit/credit imbalance.
+
+    Also updates doc.target_exchange_rate in-memory so that _je_account uses the
+    same rate for non-company-currency accounts.
+
+    Raises frappe.ValidationError if the Cheque Table record is missing, has an
+    invalid paid_amount, or if its base amount differs from the Payment Entry base
+    amount by more than 1 %.
+
+    Returns the paid_amount_company (float).
+    """
+    if not doc.cheque_table_no:
+        return flt(doc.paid_amount) * (flt(doc.source_exchange_rate) or 1.0)
+
+    ctr = frappe.db.get_value(
+        "Cheque Table Receive",
+        doc.cheque_table_no,
+        ["paid_amount", "target_exchange_rate"],
+        as_dict=True,
+    )
+    if not ctr:
+        frappe.throw(
+            _(
+                "Cheque Table Receive '{0}' was not found. "
+                "Cannot compute Journal Entry amount."
+            ).format(doc.cheque_table_no)
+        )
+
+    ctr_paid = flt(ctr.paid_amount)
+    if ctr_paid <= 0:
+        frappe.throw(
+            _(
+                "Cheque Table Receive '{0}': paid_amount must be greater than zero "
+                "before creating a Journal Entry."
+            ).format(doc.cheque_table_no)
+        )
+
+    ctr_rate = flt(ctr.target_exchange_rate) or 1.0
+    paid_amount_company = flt(ctr_paid * ctr_rate, 9)
+
+    # Validate consistency between the Cheque Table and the Payment Entry.
+    pe_base = flt(doc.paid_amount) * (flt(doc.source_exchange_rate) or 1.0)
+    if pe_base and abs(paid_amount_company - pe_base) / pe_base > 0.01:
+        frappe.throw(
+            _(
+                "Cheque Table Receive '{0}' amount in company currency ({1}) does not "
+                "match the Payment Entry base amount ({2}). "
+                "Please correct the paid_amount or exchange rate before creating a "
+                "Journal Entry."
+            ).format(doc.cheque_table_no, paid_amount_company, pe_base)
+        )
+
+    # Ensure _je_account uses the rate that matches the cheque table so that
+    # both sides of every JE use the same exchange rate.
+    if flt(doc.target_exchange_rate) != ctr_rate:
+        doc.target_exchange_rate = ctr_rate
+
+    return paid_amount_company
+
+
 @frappe.whitelist()
 def cheque(doc, method=None):
     default_payback_cheque_wallet_account = frappe.db.get_value("Company", doc.company, "default_payback_cheque_wallet_account")
@@ -75,9 +146,12 @@ def cheque(doc, method=None):
     default_cash_account = frappe.db.get_value("Company", doc.company, "default_cash_account")
     default_bank_commissions_account = frappe.db.get_value("Company", doc.company, "default_bank_commissions_account")
 
-    # Company currency and the payment amount expressed in company currency
+    # Company currency and the payment amount expressed in company currency.
+    # Always derived from the linked Cheque Table Receive (when present) so that
+    # both debit and credit accounts use the same base amount, preventing the
+    # "Total Debit must equal Total Credit" validation error.
     company_currency = frappe.db.get_value("Company", doc.company, "default_currency") or ""
-    paid_amount_company = flt(doc.paid_amount) * (flt(doc.source_exchange_rate) or 1.0)
+    paid_amount_company = _get_cheque_paid_amount(doc, company_currency)
 
     if not doc.cheque_bank and doc.cheque_action == "إيداع شيك تحت التحصيل":
         frappe.throw(_(" برجاء تحديد البنك والحساب البنكي "))
