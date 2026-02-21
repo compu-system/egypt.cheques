@@ -11,12 +11,73 @@ from frappe.utils import (flt, getdate, get_url, now,
 nowtime, get_time, today, get_datetime, add_days)
 from frappe.utils import add_to_date, now, nowdate
 
+
+def _get_account_currency(account_name, company_currency):
+    """Return the account's currency, or company_currency if not found."""
+    if not account_name:
+        return company_currency
+    acc_currency = frappe.db.get_value("Account", account_name, "account_currency")
+    return acc_currency or company_currency
+
+
+def _je_account(account, amount_company, is_debit, doc, company_currency,
+                 party_type=None, party=None, user_remark=None):
+    """
+    Build a Journal Entry Account dict with correct company-currency and
+    in-account-currency amounts, plus the exchange_rate for the account.
+
+    * amount_company  – the amount expressed in company currency.
+    * is_debit        – True for a debit entry, False for a credit entry.
+    """
+    account_currency = _get_account_currency(account, company_currency)
+
+    if account_currency == company_currency:
+        exchange_rate = 1.0
+        amount_in_acc = amount_company
+    elif account_currency == (doc.paid_to_account_currency or ""):
+        exchange_rate = flt(doc.target_exchange_rate) or 1.0
+        amount_in_acc = flt(amount_company / exchange_rate, 9)
+    elif account_currency == (doc.paid_from_account_currency or ""):
+        exchange_rate = flt(doc.source_exchange_rate) or 1.0
+        amount_in_acc = flt(amount_company / exchange_rate, 9)
+    else:
+        exchange_rate = 1.0
+        amount_in_acc = amount_company
+
+    entry = {
+        "doctype": "Journal Entry Account",
+        "account": account,
+        "exchange_rate": exchange_rate,
+        "debit": amount_company if is_debit else 0,
+        "credit": 0 if is_debit else amount_company,
+        "debit_in_account_currency": amount_in_acc if is_debit else 0,
+        "credit_in_account_currency": 0 if is_debit else amount_in_acc,
+        "user_remark": user_remark or doc.name,
+    }
+    if party_type:
+        entry["party_type"] = party_type
+    if party:
+        entry["party"] = party
+    return entry
+
+
+def _needs_multi_currency(account_names, company_currency):
+    """Return True if any of the given accounts has a non-company currency."""
+    for name in account_names:
+        if name and _get_account_currency(name, company_currency) != company_currency:
+            return True
+    return False
+
 @frappe.whitelist()
 def cheque(doc, method=None):
     default_payback_cheque_wallet_account = frappe.db.get_value("Company", doc.company, "default_payback_cheque_wallet_account")
     default_rejected_cheque_account = frappe.db.get_value("Company", doc.company, "default_rejected_cheque_account")
     default_cash_account = frappe.db.get_value("Company", doc.company, "default_cash_account")
     default_bank_commissions_account = frappe.db.get_value("Company", doc.company, "default_bank_commissions_account")
+
+    # Company currency and the payment amount expressed in company currency
+    company_currency = frappe.db.get_value("Company", doc.company, "default_currency") or ""
+    paid_amount_company = flt(doc.paid_amount) * (flt(doc.source_exchange_rate) or 1.0)
 
     if not doc.cheque_bank and doc.cheque_action == "إيداع شيك تحت التحصيل":
         frappe.throw(_(" برجاء تحديد البنك والحساب البنكي "))
@@ -54,22 +115,8 @@ def cheque(doc, method=None):
         frappe.db.sql(""" update `tabPayment Entry` set cheque_action = "" where name = %s""", doc.name)
         if not new_mode_of_payment_account == old_mode_of_payment_account:
             accounts = [
-                {
-                    "doctype": "Journal Entry Account",
-                    "account": new_mode_of_payment_account,
-                    "credit": 0,
-                    "debit": doc.paid_amount,
-                    "debit_in_account_currency": doc.paid_amount,
-                    "user_remark": doc.name
-                },
-                {
-                    "doctype": "Journal Entry Account",
-                    "account": old_mode_of_payment_account,
-                    "credit": doc.paid_amount,
-                    "debit": 0,
-                    "credit_in_account_currency": doc.paid_amount,
-                    "user_remark": doc.name
-                }
+                _je_account(new_mode_of_payment_account, paid_amount_company, True, doc, company_currency),
+                _je_account(old_mode_of_payment_account, paid_amount_company, False, doc, company_currency),
             ]
             new_doc = frappe.get_doc({
                 "doctype": "Journal Entry",
@@ -80,6 +127,7 @@ def cheque(doc, method=None):
                 "cheque_date": doc.reference_date,
                 "pe_status": "حافظة شيكات واردة",
                 "posting_date": doc.cheque_action_date,
+                "multi_currency": 1 if _needs_multi_currency([new_mode_of_payment_account, old_mode_of_payment_account], company_currency) else 0,
                 "accounts": accounts,
                 "payment_type": doc.payment_type,
                 "user_remark": doc.party_name
@@ -101,22 +149,8 @@ def cheque(doc, method=None):
         frappe.db.sql(""" update `tabPayment Entry` set cheque_status = "محصل فوري" where name = %s""", doc.name)
         frappe.db.sql(""" update `tabPayment Entry` set cheque_action = "" where name = %s""", doc.name)
         accounts = [
-            {
-                "doctype": "Journal Entry Account",
-                "account": default_cash_account,
-                "credit": 0,
-                "debit": doc.paid_amount,
-                "debit_in_account_currency": doc.paid_amount,
-                "user_remark": doc.name
-            },
-            {
-                "doctype": "Journal Entry Account",
-                "account": doc.paid_to,
-                "credit": doc.paid_amount,
-                "debit": 0,
-                "credit_in_account_currency": doc.paid_amount,
-                "user_remark": doc.name
-            }
+            _je_account(default_cash_account, paid_amount_company, True, doc, company_currency),
+            _je_account(doc.paid_to, paid_amount_company, False, doc, company_currency),
         ]
         new_doc = frappe.get_doc({
             "doctype": "Journal Entry",
@@ -127,6 +161,7 @@ def cheque(doc, method=None):
             "cheque_date": doc.reference_date,
             "pe_status": "محصل فوري",
             "posting_date": doc.cheque_action_date,
+            "multi_currency": 1 if _needs_multi_currency([default_cash_account, doc.paid_to], company_currency) else 0,
             "accounts": accounts,
             "payment_type": doc.payment_type,
             "user_remark": doc.party_name
@@ -141,38 +176,10 @@ def cheque(doc, method=None):
         frappe.db.sql(""" update `tabPayment Entry` set cheque_status = "تحت التحصيل" where name = %s""", doc.name)
         frappe.db.sql(""" update `tabPayment Entry` set cheque_action = "" where name = %s""", doc.name)
         accounts = [
-            {
-                "doctype": "Journal Entry Account",
-                "account": doc.collection_fee_account,
-                "credit": 0,
-                "debit": doc.paid_amount,
-                "debit_in_account_currency": doc.paid_amount,
-                "user_remark": doc.name
-            },
-            {
-                "doctype": "Journal Entry Account",
-                "account": default_bank_commissions_account,
-                "credit": 0,
-                "debit": doc.co3_,
-                "debit_in_account_currency": doc.co3_,
-                "user_remark": doc.name
-            },
-            {
-                "doctype": "Journal Entry Account",
-                "account": doc.paid_to,
-                "debit": 0,
-                "credit": doc.paid_amount,
-                "credit_in_account_currency": doc.paid_amount,
-                "user_remark": doc.name
-            },
-            {
-                "doctype": "Journal Entry Account",
-                "account": doc.account,
-                "debit": 0,
-                "credit": doc.co3_,
-                "credit_in_account_currency": doc.co3_,
-                "user_remark": doc.name
-            }
+            _je_account(doc.collection_fee_account, paid_amount_company, True, doc, company_currency),
+            _je_account(default_bank_commissions_account, flt(doc.co3_), True, doc, company_currency),
+            _je_account(doc.paid_to, paid_amount_company, False, doc, company_currency),
+            _je_account(doc.account, flt(doc.co3_), False, doc, company_currency),
         ]
         new_doc = frappe.get_doc({
             "doctype": "Journal Entry",
@@ -183,6 +190,7 @@ def cheque(doc, method=None):
             "cheque_date": doc.reference_date,
             "pe_status": "تحت التحصيل",
             "posting_date": doc.cheque_action_date,
+            "multi_currency": 1 if _needs_multi_currency([doc.collection_fee_account, default_bank_commissions_account, doc.paid_to, doc.account], company_currency) else 0,
             "accounts": accounts,
             "payment_type": doc.payment_type,
             "user_remark": doc.party_name
@@ -196,22 +204,8 @@ def cheque(doc, method=None):
         frappe.db.sql(""" update `tabPayment Entry` set cheque_status = "تحت التحصيل" where name = %s""", doc.name)
         frappe.db.sql(""" update `tabPayment Entry` set cheque_action = "" where name = %s""", doc.name)
         accounts = [
-            {
-                "doctype": "Journal Entry Account",
-                "account": doc.collection_fee_account,
-                "credit": 0,
-                "debit": doc.paid_amount,
-                "debit_in_account_currency": doc.paid_amount,
-                "user_remark": doc.name
-            },
-            {
-                "doctype": "Journal Entry Account",
-                "account": doc.paid_to,
-                "debit": 0,
-                "credit": doc.paid_amount,
-                "credit_in_account_currency": doc.paid_amount,
-                "user_remark": doc.name
-            }
+            _je_account(doc.collection_fee_account, paid_amount_company, True, doc, company_currency),
+            _je_account(doc.paid_to, paid_amount_company, False, doc, company_currency),
         ]
         new_doc = frappe.get_doc({
             "doctype": "Journal Entry",
@@ -222,6 +216,7 @@ def cheque(doc, method=None):
             "cheque_date": doc.reference_date,
             "pe_status": "تحت التحصيل",
             "posting_date": doc.cheque_action_date,
+            "multi_currency": 1 if _needs_multi_currency([doc.collection_fee_account, doc.paid_to], company_currency) else 0,
             "accounts": accounts,
             "payment_type": doc.payment_type,
             "user_remark": doc.party_name
@@ -235,22 +230,8 @@ def cheque(doc, method=None):
         frappe.db.sql(""" update `tabPayment Entry` set cheque_status = "تحت التحصيل" where name = %s""", doc.name)
         frappe.db.sql(""" update `tabPayment Entry` set cheque_action = "" where name = %s""", doc.name)
         accounts = [
-            {
-                "doctype": "Journal Entry Account",
-                "account": doc.collection_fee_account,
-                "credit": 0,
-                "debit": doc.paid_amount,
-                "debit_in_account_currency": doc.paid_amount,
-                "user_remark": doc.name
-            },
-            {
-                "doctype": "Journal Entry Account",
-                "account": default_payback_cheque_wallet_account,
-                "debit": 0,
-                "credit": doc.paid_amount,
-                "credit_in_account_currency": doc.paid_amount,
-                "user_remark": doc.name
-            }
+            _je_account(doc.collection_fee_account, paid_amount_company, True, doc, company_currency),
+            _je_account(default_payback_cheque_wallet_account, paid_amount_company, False, doc, company_currency),
         ]
         new_doc = frappe.get_doc({
             "doctype": "Journal Entry",
@@ -261,6 +242,7 @@ def cheque(doc, method=None):
             "cheque_date": doc.reference_date,
             "pe_status": "تحت التحصيل 2",
             "posting_date": doc.cheque_action_date,
+            "multi_currency": 1 if _needs_multi_currency([doc.collection_fee_account, default_payback_cheque_wallet_account], company_currency) else 0,
             "accounts": accounts,
             "payment_type": doc.payment_type,
             "user_remark": doc.party_name
@@ -275,22 +257,8 @@ def cheque(doc, method=None):
         frappe.db.sql(""" update `tabPayment Entry` set cheque_status = "حافظة شيكات واردة" where name = %s""", doc.name)
         frappe.db.sql(""" update `tabPayment Entry` set cheque_action = "" where name = %s""", doc.name)
         accounts = [
-            {
-                "doctype": "Journal Entry Account",
-                "account": doc.paid_to,
-                "credit": 0,
-                "debit": doc.paid_amount,
-                "debit_in_account_currency": doc.paid_amount,
-                "user_remark": doc.name
-            },
-            {
-                "doctype": "Journal Entry Account",
-                "account": default_rejected_cheque_account,
-                "debit": 0,
-                "credit": doc.paid_amount,
-                "credit_in_account_currency": doc.paid_amount,
-                "user_remark": doc.name
-            }
+            _je_account(doc.paid_to, paid_amount_company, True, doc, company_currency),
+            _je_account(default_rejected_cheque_account, paid_amount_company, False, doc, company_currency),
         ]
         new_doc = frappe.get_doc({
             "doctype": "Journal Entry",
@@ -301,6 +269,7 @@ def cheque(doc, method=None):
             "cheque_date": doc.reference_date,
             "pe_status": "حافظة شيكات واردة",
             "posting_date": doc.cheque_action_date,
+            "multi_currency": 1 if _needs_multi_currency([doc.paid_to, default_rejected_cheque_account], company_currency) else 0,
             "accounts": accounts,
             "payment_type": doc.payment_type,
             "user_remark": doc.party_name
@@ -314,24 +283,9 @@ def cheque(doc, method=None):
         frappe.db.sql(""" update `tabPayment Entry` set cheque_status = "مردود" where name = %s""", doc.name)
         frappe.db.sql(""" update `tabPayment Entry` set cheque_action = "" where name = %s""", doc.name)
         accounts = [
-            {
-                "doctype": "Journal Entry Account",
-                "account": doc.paid_from,
-                "party_type": "Customer",
-                "party": doc.party,
-                "credit": 0,
-                "debit": doc.paid_amount,
-                "debit_in_account_currency": doc.paid_amount,
-                "user_remark": doc.name
-            },
-            {
-                "doctype": "Journal Entry Account",
-                "account": doc.paid_to,
-                "debit": 0,
-                "credit": doc.paid_amount,
-                "credit_in_account_currency": doc.paid_amount,
-                "user_remark": doc.name
-            }
+            _je_account(doc.paid_from, paid_amount_company, True, doc, company_currency,
+                        party_type="Customer", party=doc.party),
+            _je_account(doc.paid_to, paid_amount_company, False, doc, company_currency),
         ]
         new_doc = frappe.get_doc({
             "doctype": "Journal Entry",
@@ -342,6 +296,7 @@ def cheque(doc, method=None):
             "cheque_date": doc.reference_date,
             "pe_status": "مردود 2",
             "posting_date": doc.cheque_action_date,
+            "multi_currency": 1 if _needs_multi_currency([doc.paid_from, doc.paid_to], company_currency) else 0,
             "accounts": accounts,
             "payment_type": doc.payment_type,
             "user_remark": doc.party_name
@@ -355,38 +310,10 @@ def cheque(doc, method=None):
         frappe.db.sql(""" update `tabPayment Entry` set cheque_status = "تحت التحصيل" where name = %s""", doc.name)
         frappe.db.sql(""" update `tabPayment Entry` set cheque_action = "" where name = %s""", doc.name)
         accounts = [
-            {
-                "doctype": "Journal Entry Account",
-                "account": doc.collection_fee_account,
-                "credit": 0,
-                "debit": doc.paid_amount,
-                "debit_in_account_currency": doc.paid_amount,
-                "user_remark": doc.name
-            },
-            {
-                "doctype": "Journal Entry Account",
-                "account": default_bank_commissions_account,
-                "credit": 0,
-                "debit": doc.co3_,
-                "debit_in_account_currency": doc.co3_,
-                "user_remark": doc.name
-            },
-            {
-                "doctype": "Journal Entry Account",
-                "account": default_payback_cheque_wallet_account,
-                "debit": 0,
-                "credit": doc.paid_amount,
-                "credit_in_account_currency": doc.paid_amount,
-                "user_remark": doc.name
-            },
-            {
-                "doctype": "Journal Entry Account",
-                "account": doc.account,
-                "debit": 0,
-                "credit": doc.co3_,
-                "credit_in_account_currency": doc.co3_,
-                "user_remark": doc.name
-            }
+            _je_account(doc.collection_fee_account, paid_amount_company, True, doc, company_currency),
+            _je_account(default_bank_commissions_account, flt(doc.co3_), True, doc, company_currency),
+            _je_account(default_payback_cheque_wallet_account, paid_amount_company, False, doc, company_currency),
+            _je_account(doc.account, flt(doc.co3_), False, doc, company_currency),
         ]
         new_doc = frappe.get_doc({
             "doctype": "Journal Entry",
@@ -397,6 +324,7 @@ def cheque(doc, method=None):
             "cheque_date": doc.reference_date,
             "pe_status": "تحت التحصيل 2",
             "posting_date": doc.cheque_action_date,
+            "multi_currency": 1 if _needs_multi_currency([doc.collection_fee_account, default_bank_commissions_account, default_payback_cheque_wallet_account, doc.account], company_currency) else 0,
             "accounts": accounts,
             "payment_type": doc.payment_type,
             "user_remark": doc.party_name
@@ -411,22 +339,8 @@ def cheque(doc, method=None):
         frappe.db.sql(""" update `tabPayment Entry` set cheque_status = "محصل" where name = %s""", doc.name)
         frappe.db.sql(""" update `tabPayment Entry` set cheque_action = "" where name = %s""", doc.name)
         accounts = [
-            {
-                "doctype": "Journal Entry Account",
-                "account": doc.account,
-                "credit": 0,
-                "debit": doc.paid_amount,
-                "debit_in_account_currency": doc.paid_amount,
-                "user_remark": doc.name
-            },
-            {
-                "doctype": "Journal Entry Account",
-                "account": doc.collection_fee_account,
-                "debit": 0,
-                "credit": doc.paid_amount,
-                "credit_in_account_currency": doc.paid_amount,
-                "user_remark": doc.name
-            }
+            _je_account(doc.account, paid_amount_company, True, doc, company_currency),
+            _je_account(doc.collection_fee_account, paid_amount_company, False, doc, company_currency),
         ]
         new_doc = frappe.get_doc({
             "doctype": "Journal Entry",
@@ -437,6 +351,7 @@ def cheque(doc, method=None):
             "cheque_date": doc.reference_date,
             "pe_status": "محصل",
             "posting_date": doc.cheque_action_date,
+            "multi_currency": 1 if _needs_multi_currency([doc.account, doc.collection_fee_account], company_currency) else 0,
             "accounts": accounts,
             "payment_type": doc.payment_type,
             "user_remark": doc.party_name
@@ -451,38 +366,10 @@ def cheque(doc, method=None):
                       doc.name)
         frappe.db.sql(""" update `tabPayment Entry` set cheque_action = "" where name = %s""", doc.name)
         accounts = [
-            {
-                "doctype": "Journal Entry Account",
-                "account": default_payback_cheque_wallet_account,
-                "credit": 0,
-                "debit": doc.paid_amount,
-                "debit_in_account_currency": doc.paid_amount,
-                "user_remark": doc.name
-            },
-            {
-                "doctype": "Journal Entry Account",
-                "account": default_bank_commissions_account,
-                "credit": 0,
-                "debit": doc.co5_,
-                "debit_in_account_currency": doc.co5_,
-                "user_remark": doc.name
-            },
-            {
-                "doctype": "Journal Entry Account",
-                "account": doc.collection_fee_account,
-                "debit": 0,
-                "credit": doc.paid_amount,
-                "credit_in_account_currency": doc.paid_amount,
-                "user_remark": doc.name
-            },
-            {
-                "doctype": "Journal Entry Account",
-                "account": doc.account,
-                "debit": 0,
-                "credit": doc.co5_,
-                "credit_in_account_currency": doc.co5_,
-                "user_remark": doc.name
-            }
+            _je_account(default_payback_cheque_wallet_account, paid_amount_company, True, doc, company_currency),
+            _je_account(default_bank_commissions_account, flt(doc.co5_), True, doc, company_currency),
+            _je_account(doc.collection_fee_account, paid_amount_company, False, doc, company_currency),
+            _je_account(doc.account, flt(doc.co5_), False, doc, company_currency),
         ]
         new_doc = frappe.get_doc({
             "doctype": "Journal Entry",
@@ -493,6 +380,7 @@ def cheque(doc, method=None):
             "cheque_date": doc.reference_date,
             "pe_status": "مرفوض بالبنك",
             "posting_date": doc.cheque_action_date,
+            "multi_currency": 1 if _needs_multi_currency([default_payback_cheque_wallet_account, default_bank_commissions_account, doc.collection_fee_account, doc.account], company_currency) else 0,
             "accounts": accounts,
             "payment_type": doc.payment_type,
             "user_remark": doc.party_name
@@ -507,22 +395,8 @@ def cheque(doc, method=None):
                       doc.name)
         frappe.db.sql(""" update `tabPayment Entry` set cheque_action = "" where name = %s""", doc.name)
         accounts = [
-            {
-                "doctype": "Journal Entry Account",
-                "account": default_payback_cheque_wallet_account,
-                "credit": 0,
-                "debit": doc.paid_amount,
-                "debit_in_account_currency": doc.paid_amount,
-                "user_remark": doc.name
-            },
-            {
-                "doctype": "Journal Entry Account",
-                "account": doc.collection_fee_account,
-                "debit": 0,
-                "credit": doc.paid_amount,
-                "credit_in_account_currency": doc.paid_amount,
-                "user_remark": doc.name
-            }
+            _je_account(default_payback_cheque_wallet_account, paid_amount_company, True, doc, company_currency),
+            _je_account(doc.collection_fee_account, paid_amount_company, False, doc, company_currency),
         ]
         new_doc = frappe.get_doc({
             "doctype": "Journal Entry",
@@ -533,6 +407,7 @@ def cheque(doc, method=None):
             "cheque_date": doc.reference_date,
             "pe_status": "مرفوض بالبنك",
             "posting_date": doc.cheque_action_date,
+            "multi_currency": 1 if _needs_multi_currency([default_payback_cheque_wallet_account, doc.collection_fee_account], company_currency) else 0,
             "accounts": accounts,
             "payment_type": doc.payment_type,
             "user_remark": doc.party_name
@@ -546,24 +421,9 @@ def cheque(doc, method=None):
         frappe.db.sql(""" update `tabPayment Entry` set cheque_status = "مظهر" where name = %s""", doc.name)
         frappe.db.sql(""" update `tabPayment Entry` set cheque_action = "" where name = %s""", doc.name)
         accounts = [
-            {
-                "doctype": "Journal Entry Account",
-                "account": doc.account_1,
-                "party_type": doc.party_type_,
-                "party": doc.party_,
-                "credit": 0,
-                "debit": doc.paid_amount,
-                "debit_in_account_currency": doc.paid_amount,
-                "user_remark": doc.name
-            },
-            {
-                "doctype": "Journal Entry Account",
-                "account": doc.paid_to,
-                "debit": 0,
-                "credit": doc.paid_amount,
-                "credit_in_account_currency": doc.paid_amount,
-                "user_remark": doc.name
-            }
+            _je_account(doc.account_1, paid_amount_company, True, doc, company_currency,
+                        party_type=doc.party_type_, party=doc.party_),
+            _je_account(doc.paid_to, paid_amount_company, False, doc, company_currency),
         ]
         new_doc = frappe.get_doc({
             "doctype": "Journal Entry",
@@ -574,6 +434,7 @@ def cheque(doc, method=None):
             "cheque_date": doc.reference_date,
             "pe_status": "مظهر",
             "posting_date": doc.cheque_action_date,
+            "multi_currency": 1 if _needs_multi_currency([doc.account_1, doc.paid_to], company_currency) else 0,
             "accounts": accounts,
             "payment_type": doc.payment_type,
             "user_remark": doc.party_name
@@ -599,22 +460,8 @@ def cheque(doc, method=None):
                       doc.name)
         frappe.db.sql(""" update `tabPayment Entry` set cheque_action = "" where name = %s""", doc.name)
         accounts = [
-            {
-                "doctype": "Journal Entry Account",
-                "account": default_cash_account,
-                "credit": 0,
-                "debit": doc.encashment_amount,
-                "debit_in_account_currency": doc.encashment_amount,
-                "user_remark": doc.name
-            },
-            {
-                "doctype": "Journal Entry Account",
-                "account": default_payback_cheque_wallet_account,
-                "debit": 0,
-                "credit": doc.encashment_amount,
-                "credit_in_account_currency": doc.encashment_amount,
-                "user_remark": doc.name
-            }
+            _je_account(default_cash_account, flt(doc.encashment_amount), True, doc, company_currency),
+            _je_account(default_payback_cheque_wallet_account, flt(doc.encashment_amount), False, doc, company_currency),
         ]
         new_doc = frappe.get_doc({
             "doctype": "Journal Entry",
@@ -625,6 +472,7 @@ def cheque(doc, method=None):
             "cheque_date": doc.reference_date,
             "pe_status": "حافظة شيكات مرجعة",
             "posting_date": doc.cheque_action_date,
+            "multi_currency": 1 if _needs_multi_currency([default_cash_account, default_payback_cheque_wallet_account], company_currency) else 0,
             "accounts": accounts,
             "payment_type": doc.payment_type,
             "user_remark": doc.party_name
@@ -641,24 +489,9 @@ def cheque(doc, method=None):
         doc.reload()
 
         accounts = [
-            {
-                "doctype": "Journal Entry Account",
-                "account": doc.paid_from,
-                "party": doc.party,
-                "party_type": doc.party_type,
-                "credit": 0,
-                "debit": doc.paid_amount,
-                "debit_in_account_currency": doc.paid_amount,
-                "user_remark": doc.name
-            },
-            {
-                "doctype": "Journal Entry Account",
-                "account": doc.paid_to,
-                "debit": 0,
-                "credit": doc.paid_amount,
-                "credit_in_account_currency": doc.paid_amount,
-                "user_remark": doc.name
-            }
+            _je_account(doc.paid_from, paid_amount_company, True, doc, company_currency,
+                        party_type=doc.party_type, party=doc.party),
+            _je_account(doc.paid_to, paid_amount_company, False, doc, company_currency),
         ]
         new_doc = frappe.get_doc({
             "doctype": "Journal Entry",
@@ -669,6 +502,7 @@ def cheque(doc, method=None):
             "cheque_date": doc.reference_date,
             "pe_status": "مردود 1",
             "posting_date": doc.cheque_action_date,
+            "multi_currency": 1 if _needs_multi_currency([doc.paid_from, doc.paid_to], company_currency) else 0,
             "accounts": accounts,
             "payment_type": doc.payment_type,
             "user_remark": doc.party_name
@@ -686,22 +520,8 @@ def cheque(doc, method=None):
         frappe.db.sql(""" update `tabPayment Entry` set cheque_status_pay = "مدفوع" where name = %s""", doc.name)
         frappe.db.sql(""" update `tabPayment Entry` set cheque_action = "" where name = %s""", doc.name)
         accounts = [
-            {
-                "doctype": "Journal Entry Account",
-                "account": doc.payable_account,
-                "credit": 0,
-                "debit": doc.paid_amount,
-                "debit_in_account_currency": doc.paid_amount,
-                "user_remark": doc.name
-            },
-            {
-                "doctype": "Journal Entry Account",
-                "account": doc.account,
-                "debit": 0,
-                "credit": doc.paid_amount,
-                "credit_in_account_currency": doc.paid_amount,
-                "user_remark": doc.name
-            }
+            _je_account(doc.payable_account, paid_amount_company, True, doc, company_currency),
+            _je_account(doc.account, paid_amount_company, False, doc, company_currency),
         ]
         new_doc = frappe.get_doc({
             "doctype": "Journal Entry",
@@ -712,6 +532,7 @@ def cheque(doc, method=None):
             "cheque_date": doc.reference_date,
             "pe_status": "مدفوع",
             "posting_date": doc.cheque_action_date,
+            "multi_currency": 1 if _needs_multi_currency([doc.payable_account, doc.account], company_currency) else 0,
             "accounts": accounts,
             "payment_type": doc.payment_type,
             "user_remark": doc.party_name
@@ -725,24 +546,9 @@ def cheque(doc, method=None):
         frappe.db.sql(""" update `tabPayment Entry` set cheque_status_pay = "مسحوب" where name = %s""", doc.name)
         frappe.db.sql(""" update `tabPayment Entry` set cheque_action = "" where name = %s""", doc.name)
         accounts = [
-            {
-                "doctype": "Journal Entry Account",
-                "account": doc.payable_account,
-                "credit": 0,
-                "debit": doc.paid_amount,
-                "debit_in_account_currency": doc.paid_amount,
-                "user_remark": doc.name
-            },
-            {
-                "doctype": "Journal Entry Account",
-                "account": doc.paid_to,
-                "party": doc.party,
-                "party_type": doc.party_type,
-                "debit": 0,
-                "credit": doc.paid_amount,
-                "credit_in_account_currency": doc.paid_amount,
-                "user_remark": doc.name
-            }
+            _je_account(doc.payable_account, paid_amount_company, True, doc, company_currency),
+            _je_account(doc.paid_to, paid_amount_company, False, doc, company_currency,
+                        party_type=doc.party_type, party=doc.party),
         ]
         new_doc = frappe.get_doc({
             "doctype": "Journal Entry",
@@ -753,6 +559,7 @@ def cheque(doc, method=None):
             "cheque_date": doc.reference_date,
             "pe_status": "مسحوب",
             "posting_date": doc.cheque_action_date,
+            "multi_currency": 1 if _needs_multi_currency([doc.payable_account, doc.paid_to], company_currency) else 0,
             "accounts": accounts,
             "payment_type": doc.payment_type,
             "user_remark": doc.party_name
@@ -767,22 +574,8 @@ def cheque(doc, method=None):
         frappe.db.sql(""" update `tabPayment Entry` set cheque_action = "" where name = %s""", doc.name)
         
         accounts = [
-            {
-                "doctype": "Journal Entry Account",
-                "account": doc.paid_to,
-                "credit": 0,
-                "debit": doc.paid_amount,
-                "debit_in_account_currency": doc.paid_amount,
-                "user_remark": doc.name
-            },
-            {
-                "doctype": "Journal Entry Account",
-                "account": doc.collection_fee_account,
-                "debit": 0,
-                "credit": doc.paid_amount,
-                "credit_in_account_currency": doc.paid_amount,
-                "user_remark": doc.name
-            }
+            _je_account(doc.paid_to, paid_amount_company, True, doc, company_currency),
+            _je_account(doc.collection_fee_account, paid_amount_company, False, doc, company_currency),
         ]
         
         new_doc = frappe.get_doc({
@@ -794,6 +587,7 @@ def cheque(doc, method=None):
             "cheque_date": doc.reference_date,
             "pe_status": "سحب من التحصيل",
             "posting_date": doc.cheque_action_date or today(),
+            "multi_currency": 1 if _needs_multi_currency([doc.paid_to, doc.collection_fee_account], company_currency) else 0,
             "accounts": accounts,
             "payment_type": doc.payment_type,
             "user_remark": doc.party_name

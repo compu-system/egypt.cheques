@@ -173,6 +173,7 @@
    "fieldtype": "Currency",
    "in_list_view": 1,
    "label": "Amount (Party Account Currency)",
+   "options": "account_currency",
    "read_only": 1
   },
   {
