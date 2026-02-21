@@ -47,7 +47,7 @@ function get_exchange_rate(from_currency, to_currency, date) {
                             if (r2.message && r2.message.length > 0) {
                                 resolve(1 / r2.message[0].exchange_rate);
                             } else {
-                                resolve(1);
+                                resolve(null);
                             }
                         }
                     });
@@ -579,8 +579,8 @@ frappe.ui.form.on("Multiple Cheque Entry", "validate", function(frm) {
         if (!row.paid_amount || row.paid_amount <= 0) {
             frappe.throw(`Paid Amount is required and must be greater than zero in row ${row.idx}`);
         }
-        if (!row.target_exchange_rate || row.target_exchange_rate <= 0) {
-            frappe.throw(`Target Exchange Rate is required and must be greater than zero in row ${row.idx}`);
+        if (row.account_currency !== row.account_currency_from && (!row.target_exchange_rate || row.target_exchange_rate <= 0)) {
+            frappe.throw(`Exchange Rate is required and must be greater than zero in row ${row.idx} (currencies differ: ${row.account_currency} ≠ ${row.account_currency_from}). Please create a Currency Exchange record.`);
         }
     });
 });
@@ -607,6 +607,17 @@ function update_target_exchange_rate(frm, row, table_name, force) {
         // For Receive: get exchange rate from cheque currency (account_currency) to party account currency (account_currency_from)
         get_exchange_rate(row.account_currency, row.account_currency_from, posting_date)
             .then(rate => {
+                if (!rate) {
+                    frappe.msgprint({
+                        title: __('Exchange Rate Not Found'),
+                        indicator: 'red',
+                        message: __('No Currency Exchange record found for {0} → {1} on or before {2}. Please create one before proceeding.',
+                            [row.account_currency, row.account_currency_from, posting_date])
+                    });
+                    frappe.model.set_value(row.doctype, row.name, "target_exchange_rate", 0);
+                    frm.refresh_field(table_name);
+                    return;
+                }
                 frappe.model.set_value(row.doctype, row.name, "target_exchange_rate", rate);
                 // Update cheque_currency to match account_currency (bank/to account)
                 if (!row.cheque_currency) {
@@ -619,6 +630,17 @@ function update_target_exchange_rate(frm, row, table_name, force) {
         // For Pay: get exchange rate from cheque currency (account_currency_from) to party account currency (account_currency)
         get_exchange_rate(row.account_currency_from, row.account_currency, posting_date)
             .then(rate => {
+                if (!rate) {
+                    frappe.msgprint({
+                        title: __('Exchange Rate Not Found'),
+                        indicator: 'red',
+                        message: __('No Currency Exchange record found for {0} → {1} on or before {2}. Please create one before proceeding.',
+                            [row.account_currency_from, row.account_currency, posting_date])
+                    });
+                    frappe.model.set_value(row.doctype, row.name, "target_exchange_rate", 0);
+                    frm.refresh_field(table_name);
+                    return;
+                }
                 frappe.model.set_value(row.doctype, row.name, "target_exchange_rate", rate);
                 // Update cheque_currency to match account_currency_from (bank/from account)
                 if (!row.cheque_currency) {
@@ -633,8 +655,8 @@ function update_target_exchange_rate(frm, row, table_name, force) {
 // Helper to calculate and set amount_in_company_currency
 function update_amount_in_company_currency(frm, row, table_name) {
     const amount = flt(row.paid_amount);
-    const rate = flt(row.target_exchange_rate) || 1;
-    const amt_company_currency = amount * rate;
+    const rate = flt(row.target_exchange_rate);
+    const amt_company_currency = amount * (rate || 1);
     frappe.model.set_value(row.doctype, row.name, "amount_in_company_currency", amt_company_currency);
     frm.refresh_field(table_name);
 }
@@ -726,8 +748,47 @@ frappe.ui.form.on("Multiple Cheque Entry", "on_submit", function(frm) {
             const paid_to_account = row.account_paid_to;
             const from_currency = row.account_currency_from;
             const to_currency = row.account_currency;
-            const exchange_rate = row.target_exchange_rate || 1;
-            
+            const exchange_rate = flt(row.target_exchange_rate) || 1;
+
+            // Prevent creating PE with 0 exchange rate when currencies differ
+            if (from_currency !== to_currency && (!row.target_exchange_rate || row.target_exchange_rate <= 0)) {
+                frappe.msgprint({
+                    title: __('Missing Exchange Rate'),
+                    indicator: 'red',
+                    message: __('Row {0}: Cannot create Payment Entry — Exchange Rate is missing or zero for {1} → {2}. Please add a Currency Exchange record and retry.',
+                        [row.idx, isReceive ? to_currency : from_currency, isReceive ? from_currency : to_currency])
+                });
+                return;
+            }
+
+            // ERPNext v15 exchange rate conventions:
+            //   source_exchange_rate = rate of paid_from_account_currency → company currency
+            //   target_exchange_rate = rate of paid_to_account_currency → company currency
+            //
+            // Receive: paid_from = party account (EGP), paid_to = cheque wallet (USD)
+            //   → source_exchange_rate = 1 (party EGP = company EGP)
+            //   → target_exchange_rate = row.target_exchange_rate (cheque USD → EGP)
+            //
+            // Pay: paid_from = bank/cheque account (USD), paid_to = party account (EGP)
+            //   → source_exchange_rate = row.target_exchange_rate (cheque USD → EGP)
+            //   → target_exchange_rate = 1 (party EGP = company EGP)
+            let source_exchange_rate, target_exchange_rate_pe;
+            if (from_currency === to_currency) {
+                // Same currency on both sides: all rates = 1
+                source_exchange_rate = 1;
+                target_exchange_rate_pe = 1;
+            } else if (isReceive) {
+                // Receive: paid_from = party account (company currency, rate=1)
+                //          paid_to  = cheque wallet (foreign currency, rate=exchange_rate)
+                source_exchange_rate = 1;
+                target_exchange_rate_pe = exchange_rate;
+            } else {
+                // Pay: paid_from = cheque account (foreign currency, rate=exchange_rate)
+                //      paid_to  = party account (company currency, rate=1)
+                source_exchange_rate = exchange_rate;
+                target_exchange_rate_pe = 1;
+            }
+
             // Create the doc
             const doc = {
                 doctype: "Payment Entry",
@@ -743,7 +804,8 @@ frappe.ui.form.on("Multiple Cheque Entry", "on_submit", function(frm) {
                 paid_to: paid_to_account,
                 paid_from_account_currency: from_currency,
                 paid_to_account_currency: to_currency,
-                target_exchange_rate: exchange_rate,
+                source_exchange_rate: source_exchange_rate,
+                target_exchange_rate: target_exchange_rate_pe,
                 cheque_bank: row.cheque_bank || frm.doc.cheque_bank,
                 bank_acc: row.bank_acc || frm.doc.bank_acc,
                 cheque_type: row.cheque_type,
@@ -764,15 +826,15 @@ frappe.ui.form.on("Multiple Cheque Entry", "on_submit", function(frm) {
             
             // Set amounts based on payment type and currencies
             if (isReceive) {
-                // For Receive: 
-                // paid_amount (customer currency) = received_amount (bank currency) * exchange_rate
-                doc.received_amount = row.paid_amount; // Amount in bank currency
-                doc.paid_amount = row.paid_amount * exchange_rate; // Amount in customer currency
+                // Receive: paid_to = cheque wallet (bank currency), paid_from = party account
+                // received_amount is in paid_to currency, paid_amount is in paid_from currency
+                doc.received_amount = row.paid_amount; // Amount in cheque/bank currency (paid_to)
+                doc.paid_amount = row.paid_amount * exchange_rate; // Amount in party currency (paid_from)
             } else {
-                // For Pay:
-                // received_amount (supplier currency) = paid_amount (bank currency) * exchange_rate
-                doc.paid_amount = row.paid_amount; // Amount in bank currency
-                doc.received_amount = row.paid_amount * exchange_rate; // Amount in supplier currency
+                // Pay: paid_from = bank/cheque account, paid_to = party account
+                // paid_amount is in paid_from currency, received_amount is in paid_to currency
+                doc.paid_amount = row.paid_amount; // Amount in cheque/bank currency (paid_from)
+                doc.received_amount = row.paid_amount * exchange_rate; // Amount in party currency (paid_to)
             }
             
             // Create the payment entry
