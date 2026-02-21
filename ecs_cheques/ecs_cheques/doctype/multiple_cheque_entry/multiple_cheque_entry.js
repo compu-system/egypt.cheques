@@ -737,135 +737,48 @@ function add_excel_buttons(frm) {
 // Unified Submit Handler
 frappe.ui.form.on("Multiple Cheque Entry", "on_submit", function(frm) {
     const isPay = frm.doc.payment_type === "Pay";
-    const isReceive = frm.doc.payment_type === "Receive";
     const table = isPay ? frm.doc.cheque_table_2 : frm.doc.cheque_table;
-    
+
     if (!table || !table.length) return;
-    
-    let docs = [];
-    let promises = [];
-    
-    // Process each row
-    table.forEach((row, index) => {
-        if (!row.payment_entry) {
-            const paid_from_account = row.account_paid_from;
-            const paid_to_account = row.account_paid_to;
-            const from_currency = row.account_currency_from;
-            const to_currency = row.account_currency;
-            const exchange_rate = flt(row.target_exchange_rate) || 1;
 
-            // Prevent creating PE with 0 exchange rate when currencies differ
-            if (from_currency !== to_currency && (!row.target_exchange_rate || row.target_exchange_rate <= 0)) {
-                frappe.msgprint({
-                    title: __('Missing Exchange Rate'),
-                    indicator: 'red',
-                    message: __('Row {0}: Cannot create Payment Entry — Exchange Rate is missing or zero for {1} → {2}. Please add a Currency Exchange record and retry.',
-                        [row.idx, isReceive ? to_currency : from_currency, isReceive ? from_currency : to_currency])
-                });
-                return;
-            }
+    const promises = [];
 
-            // ERPNext v15 exchange rate conventions:
-            //   source_exchange_rate = rate of paid_from_account_currency → company currency
-            //   target_exchange_rate = rate of paid_to_account_currency → company currency
-            //
-            // Receive: paid_from = party account (EGP), paid_to = cheque wallet (USD)
-            //   → source_exchange_rate = 1 (party EGP = company EGP)
-            //   → target_exchange_rate = row.target_exchange_rate (cheque USD → EGP)
-            //
-            // Pay: paid_from = bank/cheque account (USD), paid_to = party account (EGP)
-            //   → source_exchange_rate = row.target_exchange_rate (cheque USD → EGP)
-            //   → target_exchange_rate = 1 (party EGP = company EGP)
-            let source_exchange_rate, target_exchange_rate_pe;
-            if (from_currency === to_currency) {
-                // Same currency on both sides: all rates = 1
-                source_exchange_rate = 1;
-                target_exchange_rate_pe = 1;
-            } else if (isReceive) {
-                // Receive: paid_from = party account (company currency, rate=1)
-                //          paid_to  = cheque wallet (foreign currency, rate=exchange_rate)
-                source_exchange_rate = 1;
-                target_exchange_rate_pe = exchange_rate;
-            } else {
-                // Pay: paid_from = cheque account (foreign currency, rate=exchange_rate)
-                //      paid_to  = party account (company currency, rate=1)
-                source_exchange_rate = exchange_rate;
-                target_exchange_rate_pe = 1;
-            }
+    table.forEach((row) => {
+        if (row.payment_entry) return; // already processed
 
-            // Create the doc
-            const doc = {
-                doctype: "Payment Entry",
-                posting_date: frm.doc.posting_date,
-                reference_doctype: "Multiple Cheque Entry",
-                reference_link: frm.doc.name,
-                payment_type: frm.doc.payment_type,
-                mode_of_payment: row.mode_of_payment || frm.doc.mode_of_payment,
-                mode_of_payment_type: row.mode_of_payment_type || frm.doc.mode_of_payment_type,
-                party_type: row.party_type,
-                party: row.party,
-                paid_from: paid_from_account,
-                paid_to: paid_to_account,
-                paid_from_account_currency: from_currency,
-                paid_to_account_currency: to_currency,
-                source_exchange_rate: source_exchange_rate,
-                target_exchange_rate: target_exchange_rate_pe,
-                cheque_bank: row.cheque_bank || frm.doc.cheque_bank,
-                bank_acc: row.bank_acc || frm.doc.bank_acc,
-                cheque_type: row.cheque_type,
-                reference_no: row.reference_no,
-                reference_date: row.reference_date,
-                first_beneficiary: row.first_beneficiary,
-                person_name: row.person_name,
-                issuer_name: row.issuer_name,
-                picture_of_check: row.picture_of_check,
-                cheque_table_no: isReceive ? row.name : undefined,
-                cheque_table_no2: isPay ? row.name : undefined
-            };
-            
-            // Add drawn_bank for Receive type
-            if (isReceive) {
-                doc.drawn_bank = row.bank;
-            }
-            
-            // Set amounts based on payment type and currencies
-            if (isReceive) {
-                // Receive: paid_to = cheque wallet (bank currency), paid_from = party account
-                // received_amount is in paid_to currency, paid_amount is in paid_from currency
-                doc.received_amount = row.paid_amount; // Amount in cheque/bank currency (paid_to)
-                doc.paid_amount = row.paid_amount * exchange_rate; // Amount in party currency (paid_from)
-            } else {
-                // Pay: paid_from = bank/cheque account, paid_to = party account
-                // paid_amount is in paid_from currency, received_amount is in paid_to currency
-                doc.paid_amount = row.paid_amount; // Amount in cheque/bank currency (paid_from)
-                doc.received_amount = row.paid_amount * exchange_rate; // Amount in party currency (paid_to)
-            }
-            
-            // Create the payment entry
-            promises.push(new Promise((resolve) => {
-                frappe.call({
-                    method: "frappe.client.insert",
-                    args: { doc: doc },
-                    callback: function(inserted) {
-                        if (inserted.message) {
-                            frappe.call({
-                                method: "frappe.client.submit",
-                                args: { doc: inserted.message },
-                                callback: function(submitted) {
-                                    if (submitted.message) {
-                                        const child_doctype = isPay ? "Cheque Table Pay" : "Cheque Table Receive";
-                                        frappe.db.set_value(child_doctype, row.name, "payment_entry", submitted.message.name)
-                                            .then(() => resolve());
-                                    }
-                                }
-                            });
-                        }
+        // Delegate all amount / exchange-rate computation and PE creation to the
+        // server so that account currencies are always fetched from the Account
+        // master rather than relying on potentially-stale child-table fields
+        // (account_currency_from / account_currency).
+        const frm_data = {
+            company: frm.doc.company,
+            payment_type: frm.doc.payment_type,
+            posting_date: frm.doc.posting_date,
+            name: frm.doc.name,
+            mode_of_payment: frm.doc.mode_of_payment,
+            mode_of_payment_type: frm.doc.mode_of_payment_type,
+            cheque_bank: frm.doc.cheque_bank,
+            bank_acc: frm.doc.bank_acc,
+        };
+
+        promises.push(new Promise((resolve) => {
+            frappe.call({
+                method: "ecs_cheques.ecs_cheques.doctype.multiple_cheque_entry.multiple_cheque_entry.create_payment_entry_from_cheque",
+                args: { row_data: row, frm_data: frm_data },
+                callback: function(r) {
+                    if (r.message) {
+                        const child_doctype = isPay ? "Cheque Table Pay" : "Cheque Table Receive";
+                        frappe.db.set_value(child_doctype, row.name, "payment_entry", r.message)
+                            .then(() => resolve());
+                    } else {
+                        resolve();
                     }
-                });
-            }));
-        }
+                },
+                error: function() { resolve(); }
+            });
+        }));
     });
-    
+
     if (promises.length > 0) {
         Promise.all(promises).then(() => {
             frappe.msgprint("تم إنشاء الشيكات بنجاح ... برجاء الدخول على المدفوعات والمقبوضات ");
