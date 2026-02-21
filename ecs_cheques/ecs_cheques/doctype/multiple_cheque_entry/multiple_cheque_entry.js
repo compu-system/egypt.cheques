@@ -1017,58 +1017,26 @@ frappe.ui.form.on("Cheque Table Receive", "party", function(frm, cdt, cdn) {
             }
         });
         
-        // Get company's default account based on party type
-        if (row.party_type === "Customer") {
+        // Use get_party_account to fetch party-specific account (falls back to company default)
+        if (frm.doc.company) {
             frappe.call({
-                method: "frappe.client.get_value",
+                method: "erpnext.accounts.party.get_party_account",
                 args: {
-                    doctype: "Company",
-                    fieldname: "default_receivable_account",
-                    filters: { name: frm.doc.company }
+                    party_type: row.party_type,
+                    party: row.party,
+                    company: frm.doc.company
                 },
                 callback: function(r) {
-                    if (r.message && r.message.default_receivable_account) {
-                        frappe.model.set_value(cdt, cdn, "account_paid_from", r.message.default_receivable_account);
-                        
-                        // Get account currency
+                    if (r.message) {
+                        frappe.model.set_value(cdt, cdn, "account_paid_from", r.message);
+
+                        // Get account currency for the party account
                         frappe.call({
                             method: "frappe.client.get_value",
                             args: {
                                 doctype: "Account",
                                 fieldname: "account_currency",
-                                filters: { name: r.message.default_receivable_account }
-                            },
-                            callback: function(r2) {
-                                if (r2.message) {
-                                    frappe.model.set_value(cdt, cdn, "account_currency_from", r2.message.account_currency);
-                                    // Update target exchange rate
-                                    update_target_exchange_rate(frm, locals[cdt][cdn], 'cheque_table');
-                                    frm.refresh_field("cheque_table");
-                                }
-                            }
-                        });
-                    }
-                }
-            });
-        } else if (row.party_type === "Supplier") {
-            frappe.call({
-                method: "frappe.client.get_value",
-                args: {
-                    doctype: "Company",
-                    fieldname: "default_payable_account",
-                    filters: { name: frm.doc.company }
-                },
-                callback: function(r) {
-                    if (r.message && r.message.default_payable_account) {
-                        frappe.model.set_value(cdt, cdn, "account_paid_from", r.message.default_payable_account);
-                        
-                        // Get account currency
-                        frappe.call({
-                            method: "frappe.client.get_value",
-                            args: {
-                                doctype: "Account",
-                                fieldname: "account_currency",
-                                filters: { name: r.message.default_payable_account }
+                                filters: { name: r.message }
                             },
                             callback: function(r2) {
                                 if (r2.message) {
@@ -1083,7 +1051,7 @@ frappe.ui.form.on("Cheque Table Receive", "party", function(frm, cdt, cdn) {
                 }
             });
         }
-        
+
         // Set account_paid_to to parent's bank_acc
         if (frm.doc.bank_acc) {
             frappe.model.set_value(cdt, cdn, "account_paid_to", frm.doc.bank_acc);
@@ -1130,58 +1098,26 @@ frappe.ui.form.on("Cheque Table Pay", "party", function(frm, cdt, cdn) {
             }
         });
         
-        // Get company's default account based on party type
-        if (row.party_type === "Supplier") {
+        // Use get_party_account to fetch party-specific account (falls back to company default)
+        if (frm.doc.company) {
             frappe.call({
-                method: "frappe.client.get_value",
+                method: "erpnext.accounts.party.get_party_account",
                 args: {
-                    doctype: "Company",
-                    fieldname: "default_payable_account",
-                    filters: { name: frm.doc.company }
+                    party_type: row.party_type,
+                    party: row.party,
+                    company: frm.doc.company
                 },
                 callback: function(r) {
-                    if (r.message && r.message.default_payable_account) {
-                        frappe.model.set_value(cdt, cdn, "account_paid_to", r.message.default_payable_account);
-                        
-                        // Get account currency
+                    if (r.message) {
+                        frappe.model.set_value(cdt, cdn, "account_paid_to", r.message);
+
+                        // Get account currency for the party account
                         frappe.call({
                             method: "frappe.client.get_value",
                             args: {
                                 doctype: "Account",
                                 fieldname: "account_currency",
-                                filters: { name: r.message.default_payable_account }
-                            },
-                            callback: function(r2) {
-                                if (r2.message) {
-                                    frappe.model.set_value(cdt, cdn, "account_currency", r2.message.account_currency);
-                                    // Update target exchange rate
-                                    update_target_exchange_rate(frm, locals[cdt][cdn], 'cheque_table_2');
-                                    frm.refresh_field("cheque_table_2");
-                                }
-                            }
-                        });
-                    }
-                }
-            });
-        } else if (row.party_type === "Customer") {
-            frappe.call({
-                method: "frappe.client.get_value",
-                args: {
-                    doctype: "Company",
-                    fieldname: "default_receivable_account",
-                    filters: { name: frm.doc.company }
-                },
-                callback: function(r) {
-                    if (r.message && r.message.default_receivable_account) {
-                        frappe.model.set_value(cdt, cdn, "account_paid_to", r.message.default_receivable_account);
-                        
-                        // Get account currency
-                        frappe.call({
-                            method: "frappe.client.get_value",
-                            args: {
-                                doctype: "Account",
-                                fieldname: "account_currency",
-                                filters: { name: r.message.default_receivable_account }
+                                filters: { name: r.message }
                             },
                             callback: function(r2) {
                                 if (r2.message) {
