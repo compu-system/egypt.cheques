@@ -266,7 +266,7 @@
  "links": [
   {
    "link_doctype": "Payment Entry",
-   "link_fieldname": "reference_no"
+   "link_fieldname": "reference_link"
   }
  ],
  "modified": "2025-12-23 17:39:57.428274",
