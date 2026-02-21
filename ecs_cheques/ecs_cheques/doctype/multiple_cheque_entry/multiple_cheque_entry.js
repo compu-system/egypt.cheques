@@ -145,6 +145,8 @@ frappe.ui.form.on("Multiple Cheque Entry", {
             // Set paid_amount currency to account_currency
             frm.fields_dict.cheque_table.grid.update_docfield_property('paid_amount', 'options', 'currency');
             frm.fields_dict.cheque_table.grid.update_docfield_property('paid_amount', 'currency', 'account_currency');
+            // Set amount_in_company_currency to display in account_currency_from (party account currency)
+            frm.fields_dict.cheque_table.grid.update_docfield_property('amount_in_company_currency', 'options', 'account_currency_from');
         }
         
         if (frm.fields_dict.cheque_table_2) {
@@ -197,6 +199,8 @@ frappe.ui.form.on("Multiple Cheque Entry", {
             // Set paid_amount currency to account_currency
             frm.fields_dict.cheque_table_2.grid.update_docfield_property('paid_amount', 'options', 'currency');
             frm.fields_dict.cheque_table_2.grid.update_docfield_property('paid_amount', 'currency', 'account_currency_from');
+            // Set amount_in_company_currency to display in account_currency (party account currency)
+            frm.fields_dict.cheque_table_2.grid.update_docfield_property('amount_in_company_currency', 'options', 'account_currency');
         }
     },
     
