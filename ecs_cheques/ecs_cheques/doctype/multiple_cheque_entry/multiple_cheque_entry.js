@@ -746,33 +746,17 @@ frappe.ui.form.on("Multiple Cheque Entry", "on_submit", function(frm) {
     table.forEach((row) => {
         if (row.payment_entry) return; // already processed
 
-        // Delegate all amount / exchange-rate computation and PE creation to the
-        // server so that account currencies are always fetched from the Account
-        // master rather than relying on potentially-stale child-table fields
-        // (account_currency_from / account_currency).
-        const frm_data = {
-            company: frm.doc.company,
-            payment_type: frm.doc.payment_type,
-            posting_date: frm.doc.posting_date,
-            name: frm.doc.name,
-            mode_of_payment: frm.doc.mode_of_payment,
-            mode_of_payment_type: frm.doc.mode_of_payment_type,
-            cheque_bank: frm.doc.cheque_bank,
-            bank_acc: frm.doc.bank_acc,
-        };
-
+        // Pass only docname and row_id; the server fetches all data from the DB,
+        // eliminating reliance on potentially stale client-side row values.
         promises.push(new Promise((resolve) => {
             frappe.call({
                 method: "ecs_cheques.ecs_cheques.doctype.multiple_cheque_entry.multiple_cheque_entry.create_payment_entry_from_cheque",
-                args: { row_data: row, frm_data: frm_data },
+                args: { docname: frm.doc.name, row_id: row.name },
                 callback: function(r) {
                     if (r.message) {
-                        const child_doctype = isPay ? "Cheque Table Pay" : "Cheque Table Receive";
-                        frappe.db.set_value(child_doctype, row.name, "payment_entry", r.message)
-                            .then(() => resolve());
-                    } else {
-                        resolve();
+                        frappe.show_alert({ message: __("Payment Entry {0} Created", [r.message]), indicator: "green" });
                     }
+                    resolve();
                 },
                 error: function() { resolve(); }
             });
@@ -781,7 +765,6 @@ frappe.ui.form.on("Multiple Cheque Entry", "on_submit", function(frm) {
 
     if (promises.length > 0) {
         Promise.all(promises).then(() => {
-            frappe.msgprint("تم إنشاء الشيكات بنجاح ... برجاء الدخول على المدفوعات والمقبوضات ");
             frm.reload_doc();
         });
     }

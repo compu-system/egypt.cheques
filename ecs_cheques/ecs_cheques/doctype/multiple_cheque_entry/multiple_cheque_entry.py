@@ -2,7 +2,6 @@
 # For license information, please see license.txt
 
 import frappe
-import json
 import io
 from frappe.model.document import Document
 from frappe import _
@@ -101,103 +100,125 @@ def _compute_payment_entry_amounts(
 
 
 @frappe.whitelist()
-def create_payment_entry_from_cheque(row_data, frm_data):
+def create_payment_entry_from_cheque(docname, row_id):
 	"""Create and submit a single Payment Entry from a Cheque Table row.
 
-	Account currencies are fetched directly from the **Account** master so that
-	stale UI-stored values (``account_currency_from`` / ``account_currency`` on the
-	child table) cannot cause incorrect ``source_exchange_rate`` / ``paid_amount``
-	assignments.
+	Fetches authoritative data from the database using *docname* (parent
+	Multiple Cheque Entry) and *row_id* (child row ``name``).  Account
+	currencies are read from the Account master so that stale UI values
+	cannot cause incorrect exchange-rate assignments.
+
+	ERPNext v15 multi-currency conventions for **Receive** (ILS company):
+	  paid_amount          = row.amount_in_company_currency  (ILS)
+	  received_amount      = row.paid_amount                 (USD)
+	  source_exchange_rate = 1.0   (paid_from == company currency)
+	  target_exchange_rate = row.target_exchange_rate        (USD→ILS)
 
 	Returns the name of the submitted Payment Entry.
 	"""
-	if isinstance(row_data, str):
-		row_data = json.loads(row_data)
-	if isinstance(frm_data, str):
-		frm_data = json.loads(frm_data)
+	doc = frappe.get_doc("Multiple Cheque Entry", docname)
 
-	company = frm_data.get("company")
-	payment_type = frm_data.get("payment_type")
-	posting_date = frm_data.get("posting_date")
-	reference_link = frm_data.get("name")
+	company = doc.company
+	payment_type = doc.payment_type
+	is_receive = payment_type == "Receive"
 
 	company_currency = (
 		frappe.db.get_value("Company", company, "default_currency") or ""
 	)
 
-	paid_from = row_data.get("account_paid_from")
-	paid_to = row_data.get("account_paid_to")
+	# Locate the child row in the appropriate table.
+	child_doctype = "Cheque Table Receive" if is_receive else "Cheque Table Pay"
+	table = doc.cheque_table if is_receive else doc.cheque_table_2
+	row = next((r for r in (table or []) if r.name == row_id), None)
+	if not row:
+		frappe.throw(
+			_("Child row {0} not found in document {1}").format(row_id, docname)
+		)
 
-	# Always fetch currencies from the Account master – do not trust child-table cache.
+	paid_from = row.account_paid_from
+	paid_to = row.account_paid_to
+
+	# Always fetch currencies from the Account master.
 	paid_from_currency = _get_account_currency_db(paid_from, company_currency)
 	paid_to_currency = _get_account_currency_db(paid_to, company_currency)
 
-	raw_exchange_rate = flt(row_data.get("target_exchange_rate"))
+	raw_exchange_rate = flt(row.target_exchange_rate)
 	if paid_from_currency != paid_to_currency and raw_exchange_rate <= 0:
 		frappe.throw(
 			_(
 				"Row {0}: Cannot create Payment Entry — Exchange Rate is missing or zero "
 				"for {1} → {2}. Please add a Currency Exchange record and retry."
 			).format(
-				row_data.get("idx", ""),
-				paid_to_currency if payment_type == "Receive" else paid_from_currency,
-				paid_from_currency if payment_type == "Receive" else paid_to_currency,
+				row.idx or "",
+				paid_to_currency if is_receive else paid_from_currency,
+				paid_from_currency if is_receive else paid_to_currency,
 			)
 		)
-	stored_exchange_rate = raw_exchange_rate or 1.0
-	row_paid_amount = flt(row_data.get("paid_amount"))
 
-	amounts = _compute_payment_entry_amounts(
-		row_paid_amount,
-		paid_from_currency,
-		paid_to_currency,
-		company_currency,
-		stored_exchange_rate,
-		payment_type,
-	)
+	stored_rate = raw_exchange_rate or 1.0
 
-	is_receive = payment_type == "Receive"
+	# Derive amounts and exchange rates directly from DB-stored values.
+	if paid_from_currency == paid_to_currency:
+		paid_amount = flt(row.paid_amount)
+		received_amount = flt(row.paid_amount)
+		source_exchange_rate = 1.0
+		target_exchange_rate = 1.0
+	elif is_receive:
+		# paid_from = company currency (e.g. ILS), paid_to = foreign (e.g. USD)
+		paid_amount = flt(row.amount_in_company_currency)   # ILS
+		received_amount = flt(row.paid_amount)              # USD
+		source_exchange_rate = 1.0
+		target_exchange_rate = stored_rate                  # USD → ILS
+	else:
+		# Pay: paid_from = foreign (e.g. USD), paid_to = company currency (ILS)
+		paid_amount = flt(row.paid_amount)                  # USD
+		received_amount = flt(row.amount_in_company_currency)  # ILS
+		source_exchange_rate = stored_rate                  # USD → ILS
+		target_exchange_rate = 1.0
 
 	pe_dict = {
 		"doctype": "Payment Entry",
-		"posting_date": posting_date,
+		"posting_date": doc.posting_date,
 		"reference_doctype": "Multiple Cheque Entry",
-		"reference_link": reference_link,
+		"reference_link": docname,
 		"payment_type": payment_type,
 		"company": company,
-		"mode_of_payment": row_data.get("mode_of_payment") or frm_data.get("mode_of_payment"),
-		"mode_of_payment_type": (
-			row_data.get("mode_of_payment_type") or frm_data.get("mode_of_payment_type")
-		),
-		"party_type": row_data.get("party_type"),
-		"party": row_data.get("party"),
+		"mode_of_payment": row.mode_of_payment or doc.mode_of_payment,
+		"mode_of_payment_type": doc.mode_of_payment_type,
+		"party_type": row.party_type,
+		"party": row.party,
 		"paid_from": paid_from,
 		"paid_to": paid_to,
-		"paid_from_account_currency": amounts["paid_from_account_currency"],
-		"paid_to_account_currency": amounts["paid_to_account_currency"],
-		"source_exchange_rate": amounts["source_exchange_rate"],
-		"target_exchange_rate": amounts["target_exchange_rate"],
-		"paid_amount": amounts["paid_amount"],
-		"received_amount": amounts["received_amount"],
-		"cheque_bank": row_data.get("cheque_bank") or frm_data.get("cheque_bank"),
-		"bank_acc": row_data.get("bank_acc") or frm_data.get("bank_acc"),
-		"cheque_type": row_data.get("cheque_type"),
-		"reference_no": row_data.get("reference_no"),
-		"reference_date": row_data.get("reference_date"),
-		"first_beneficiary": row_data.get("first_beneficiary"),
-		"person_name": row_data.get("person_name"),
-		"issuer_name": row_data.get("issuer_name"),
-		"picture_of_check": row_data.get("picture_of_check"),
-		"cheque_table_no": row_data.get("name") if is_receive else None,
-		"cheque_table_no2": row_data.get("name") if not is_receive else None,
+		"paid_from_account_currency": paid_from_currency,
+		"paid_to_account_currency": paid_to_currency,
+		"source_exchange_rate": source_exchange_rate,
+		"target_exchange_rate": target_exchange_rate,
+		"paid_amount": paid_amount,
+		"received_amount": received_amount,
+		"cheque_bank": doc.cheque_bank,
+		"bank_acc": doc.bank_acc,
+		"cheque_type": row.cheque_type,
+		"reference_no": row.reference_no,
+		"reference_date": row.reference_date,
+		"first_beneficiary": row.first_beneficiary,
+		"person_name": row.person_name,
+		"issuer_name": row.issuer_name,
+		"picture_of_check": row.picture_of_check,
+		"cheque_table_no": row.name if is_receive else None,
+		"cheque_table_no2": row.name if not is_receive else None,
 	}
 
 	if is_receive:
-		pe_dict["drawn_bank"] = row_data.get("bank")
+		pe_dict["drawn_bank"] = row.bank
 
 	pe_doc = frappe.get_doc(pe_dict)
+	pe_doc.flags.ignore_permissions = True
 	pe_doc.insert()
 	pe_doc.submit()
+
+	# Persist the Payment Entry link back to the child row in the database.
+	frappe.db.set_value(child_doctype, row_id, "payment_entry", pe_doc.name)
+
 	return pe_doc.name
 
 

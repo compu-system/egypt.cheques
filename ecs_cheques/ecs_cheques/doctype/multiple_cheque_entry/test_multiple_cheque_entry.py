@@ -72,9 +72,11 @@ for _attr in ("getdate", "get_url", "now", "nowtime", "get_time", "today",
 	setattr(_utils, _attr, _mock.MagicMock())
 sys.modules["frappe.utils"] = _utils
 
-# Now import the function under test.
+# Now import the functions under test.
 from ecs_cheques.ecs_cheques.doctype.multiple_cheque_entry.multiple_cheque_entry import (  # noqa: E402
 	_compute_payment_entry_amounts,
+	_get_account_currency_db,
+	create_payment_entry_from_cheque,
 )
 
 
@@ -221,6 +223,187 @@ class TestComputePaymentEntryAmounts(unittest.TestCase):
 		result = _compute_payment_entry_amounts(1000.0, "USD", "ILS", "ILS", 3.159059, "Pay")
 		self.assertNotEqual(result["source_exchange_rate"], 1.0,
 			msg="source_exchange_rate must not default to 1 for a foreign paid_from account")
+
+
+# ---------------------------------------------------------------------------
+# Tests for the DB-fetch path: create_payment_entry_from_cheque(docname, row_id)
+# ---------------------------------------------------------------------------
+
+class _Row:
+	"""Minimal child-row stub."""
+	def __init__(self, **kwargs):
+		for k, v in kwargs.items():
+			setattr(self, k, v)
+
+	def get(self, key, default=None):
+		return getattr(self, key, default)
+
+
+class _Doc:
+	"""Minimal parent-document stub."""
+	def __init__(self, **kwargs):
+		for k, v in kwargs.items():
+			setattr(self, k, v)
+
+	def get(self, key, default=None):
+		return getattr(self, key, default)
+
+
+class TestCreatePaymentEntryFromCheque(unittest.TestCase):
+	"""Verify create_payment_entry_from_cheque builds the correct Payment Entry dict.
+
+	We mock all Frappe DB/doc calls so no running instance is required.
+	"""
+
+	def _make_receive_row(self):
+		return _Row(
+			name="ROW-001",
+			idx=1,
+			account_paid_from="ILS-Receivable",
+			account_paid_to="USD-Wallet",
+			paid_amount=1000.0,
+			amount_in_company_currency=3159.059,
+			target_exchange_rate=3.159059,
+			mode_of_payment="Cheque",
+			party_type="Customer",
+			party="CUST-001",
+			cheque_type="Crossed",
+			reference_no="CHQ-001",
+			reference_date="2024-01-15",
+			first_beneficiary="Company",
+			person_name="Ahmed",
+			issuer_name="Ahmed",
+			picture_of_check=None,
+			bank="National Bank",
+			payment_entry=None,
+		)
+
+	def _make_parent_doc(self, row):
+		return _Doc(
+			name="MCE-001",
+			company="Test Co",
+			payment_type="Receive",
+			posting_date="2024-01-15",
+			mode_of_payment="Cheque",
+			mode_of_payment_type="Cheque",
+			cheque_bank="National Bank",
+			bank_acc="Bank-ILS",
+			cheque_table=[row],
+			cheque_table_2=[],
+		)
+
+	def setUp(self):
+		import sys
+		self._frappe = sys.modules["frappe"]
+
+		# Capture inserted PE dict
+		self._inserted = {}
+		self._submitted = False
+		self._set_values = []
+
+		class _FakePE:
+			def __init__(inner_self, d):
+				inner_self.__dict__.update(d)
+				inner_self.name = "PE-TEST-001"
+				inner_self.flags = type("F", (), {"ignore_permissions": False})()
+
+			def insert(inner_self):
+				self._inserted = inner_self.__dict__.copy()
+
+			def submit(inner_self):
+				self._submitted = True
+
+		row = self._make_receive_row()
+		doc = self._make_parent_doc(row)
+
+		self._frappe.get_doc = lambda *args, **kwargs: (
+			doc if (args and args[0] == "Multiple Cheque Entry") else _FakePE(kwargs or args[0] if args else {})
+		)
+
+		# Mock get_doc to return either the parent or a new PE
+		orig_get_doc = self._frappe.get_doc
+		def _get_doc(arg, *rest):
+			if arg == "Multiple Cheque Entry":
+				return doc
+			# It's a PE dict
+			return _FakePE(arg)
+		self._frappe.get_doc = _get_doc
+
+		# Mock db
+		class _DB:
+			def get_value(self, doctype, name, field):
+				if doctype == "Company":
+					return "ILS"
+				if doctype == "Account":
+					if name == "ILS-Receivable":
+						return "ILS"
+					if name == "USD-Wallet":
+						return "USD"
+				return None
+
+			def set_value(self_, doctype, name, field, value):
+				self._set_values.append((doctype, name, field, value))
+
+		self._frappe.db = _DB()
+		self._frappe.throw = lambda msg, exc=None: (_ for _ in ()).throw(Exception(msg))
+
+	def test_receive_db_fetch_amounts(self):
+		"""Receive: amounts fetched from DB row match v15 conventions."""
+		result = create_payment_entry_from_cheque("MCE-001", "ROW-001")
+
+		self.assertEqual(result, "PE-TEST-001")
+		self.assertTrue(self._submitted, "Payment Entry must be submitted")
+
+		pe = self._inserted
+		self.assertAlmostEqual(pe.get("paid_amount"), 3159.059, places=3,
+			msg="paid_amount must equal amount_in_company_currency (ILS)")
+		self.assertAlmostEqual(pe.get("received_amount"), 1000.0, places=3,
+			msg="received_amount must equal row.paid_amount (USD)")
+		self.assertAlmostEqual(pe.get("source_exchange_rate"), 1.0, places=6)
+		self.assertAlmostEqual(pe.get("target_exchange_rate"), 3.159059, places=6)
+		self.assertEqual(pe.get("paid_from_account_currency"), "ILS")
+		self.assertEqual(pe.get("paid_to_account_currency"), "USD")
+
+	def test_receive_child_row_updated(self):
+		"""Child row payment_entry must be updated via frappe.db.set_value."""
+		create_payment_entry_from_cheque("MCE-001", "ROW-001")
+
+		self.assertTrue(
+			any(
+				sv[0] == "Cheque Table Receive" and sv[1] == "ROW-001"
+				and sv[2] == "payment_entry" and sv[3] == "PE-TEST-001"
+				for sv in self._set_values
+			),
+			"frappe.db.set_value must be called to persist payment_entry on the child row",
+		)
+
+	def test_receive_ignore_permissions_set(self):
+		"""pe.flags.ignore_permissions must be True before insert."""
+		# Re-capture flag state at insert time
+		flags_at_insert = {}
+
+		orig_get_doc = self._frappe.get_doc
+		class _FlagCapturePE:
+			def __init__(inner_self, d):
+				inner_self.__dict__.update(d)
+				inner_self.name = "PE-TEST-001"
+				inner_self.flags = type("F", (), {"ignore_permissions": False})()
+
+			def insert(inner_self):
+				flags_at_insert["ignore_permissions"] = inner_self.flags.ignore_permissions
+
+			def submit(inner_self):
+				pass
+
+		def _get_doc2(arg, *rest):
+			if arg == "Multiple Cheque Entry":
+				return orig_get_doc("Multiple Cheque Entry")
+			return _FlagCapturePE(arg)
+
+		self._frappe.get_doc = _get_doc2
+		create_payment_entry_from_cheque("MCE-001", "ROW-001")
+		self.assertTrue(flags_at_insert.get("ignore_permissions"),
+			"flags.ignore_permissions must be True when inserting the Payment Entry")
 
 
 if __name__ == "__main__":
