@@ -61,13 +61,28 @@ def _compute_payment_entry_amounts(
 		)
 
 	# Determine each side's exchange rate to company currency.
-	# stored_exchange_rate already equals (foreign_currency → company_currency).
+	# For Receive: stored_exchange_rate = paid_to_currency → paid_from_currency (bank → party)
+	# For Pay:     stored_exchange_rate = paid_from_currency → paid_to_currency  (bank → party)
+	# When company_currency matches paid_from or paid_to, derive the other rate accordingly.
 	if paid_from_currency == company_currency:
 		source_exchange_rate = 1.0
-		target_exchange_rate_pe = rate      # paid_to_currency → company_currency
+		if payment_type == "Receive":
+			# stored = paid_to (foreign) → paid_from (company) = foreign → company ✓
+			target_exchange_rate_pe = rate
+		else:
+			# Pay: paid_from = bank = company; stored = bank (company) → paid_to (foreign).
+			# target = paid_to → company = 1 / stored
+			target_exchange_rate_pe = flt(1.0 / rate, 9) if rate else 1.0
 	elif paid_to_currency == company_currency:
-		source_exchange_rate = rate         # paid_from_currency → company_currency
 		target_exchange_rate_pe = 1.0
+		if payment_type == "Receive":
+			# stored = paid_to (company) → paid_from (foreign) = company → foreign.
+			# source = paid_from (foreign) → company = 1 / stored
+			source_exchange_rate = flt(1.0 / rate, 9) if rate else 1.0
+		else:
+			# Pay: paid_to = party = company; stored = paid_from (foreign) → paid_to (company).
+			# source = paid_from → company = stored ✓
+			source_exchange_rate = rate
 	else:
 		# Edge case: both accounts in non-company currencies.
 		source_exchange_rate = rate
@@ -164,11 +179,24 @@ def create_payment_entry_from_cheque(docname, row_id):
 		source_exchange_rate = 1.0
 		target_exchange_rate = 1.0
 	elif is_receive:
-		# paid_from = company currency (e.g. ILS), paid_to = foreign (e.g. USD)
-		paid_amount = flt(row.amount_in_company_currency)   # ILS
-		received_amount = flt(row.paid_amount)              # USD
-		source_exchange_rate = 1.0
-		target_exchange_rate = stored_rate                  # USD → ILS
+		# paid_from = party account, paid_to = bank/MOP account.
+		paid_amount = flt(row.amount_in_company_currency)   # in paid_from currency
+		received_amount = flt(row.paid_amount)              # in paid_to currency
+		exch_party_to_mop = flt(getattr(row, "exchange_rate_party_to_mop", 0))
+		if exch_party_to_mop > 0:
+			# Explicit bidirectional rate provided: use it as source_exchange_rate.
+			# target_exchange_rate satisfies: paid_amount * source = received * target
+			source_exchange_rate = exch_party_to_mop
+			target_exchange_rate = flt(
+				paid_amount * source_exchange_rate / received_amount if received_amount else 1.0, 9
+			)
+		elif paid_from_currency == company_currency:
+			source_exchange_rate = 1.0
+			target_exchange_rate = stored_rate          # paid_to_currency → company_currency
+		else:
+			# paid_to_currency == company_currency
+			source_exchange_rate = flt(1.0 / stored_rate, 9) if stored_rate else 1.0
+			target_exchange_rate = 1.0
 	else:
 		# Pay: paid_from = foreign (e.g. USD), paid_to = company currency (ILS)
 		paid_amount = flt(row.paid_amount)                  # USD
