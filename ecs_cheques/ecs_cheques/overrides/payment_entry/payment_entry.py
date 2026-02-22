@@ -74,19 +74,16 @@ def _get_cheque_paid_amount(doc, company_currency):
 
     For Receive-type Payment Entries that are linked to a Cheque Table Receive row
     (via doc.cheque_table_no), the canonical amount for the Journal Entry must be
-    Cheque Table Receive.paid_amount × Cheque Table Receive.target_exchange_rate.
-    Using doc.paid_amount × source_exchange_rate can produce an incorrect base
-    amount when the exchange rate on the Payment Entry was stored incorrectly
-    (e.g. set to 1 instead of the actual rate), which then causes ERPNext's JE
-    validation to re-fetch the real rate for one account but not the other,
-    resulting in a debit/credit imbalance.
+    consistent with the exchange rates stored in the Payment Entry.
 
-    Also updates doc.target_exchange_rate in-memory so that _je_account uses the
-    same rate for non-company-currency accounts.
+    When ``exchange_rate_party_to_mop`` is set on the Cheque Table Receive row the
+    Payment Entry was created with that value as ``source_exchange_rate``, so the
+    company-currency base is ``doc.paid_amount × source_exchange_rate``.
 
-    Raises frappe.ValidationError if the Cheque Table record is missing, has an
-    invalid paid_amount, or if its base amount differs from the Payment Entry base
-    amount by more than 1 %.
+    Otherwise the legacy path is used: ``ctr.paid_amount × ctr.target_exchange_rate``.
+
+    Also updates doc.target_exchange_rate in-memory (legacy path only) so that
+    _je_account uses the same rate for non-company-currency accounts.
 
     Returns the paid_amount_company (float).
     """
@@ -96,7 +93,7 @@ def _get_cheque_paid_amount(doc, company_currency):
     ctr = frappe.db.get_value(
         "Cheque Table Receive",
         doc.cheque_table_no,
-        ["paid_amount", "target_exchange_rate"],
+        ["paid_amount", "target_exchange_rate", "exchange_rate_party_to_mop"],
         as_dict=True,
     )
     if not ctr:
@@ -116,6 +113,23 @@ def _get_cheque_paid_amount(doc, company_currency):
             ).format(doc.cheque_table_no)
         )
 
+    exch_party_to_mop = flt(ctr.get("exchange_rate_party_to_mop") or 0)
+
+    if exch_party_to_mop > 0:
+        # Bidirectional rate path: company-currency base is
+        # PE.paid_amount × source_exchange_rate (= exchange_rate_party_to_mop).
+        pe_source = flt(doc.source_exchange_rate) or 1.0
+        if abs(pe_source - exch_party_to_mop) / exch_party_to_mop > 0.01:
+            frappe.throw(
+                _(
+                    "Payment Entry source_exchange_rate ({0}) does not match "
+                    "exchange_rate_party_to_mop ({1}) from Cheque Table Receive '{2}'. "
+                    "Please recreate the Payment Entry."
+                ).format(pe_source, exch_party_to_mop, doc.cheque_table_no)
+            )
+        return flt(flt(doc.paid_amount) * pe_source, 9)
+
+    # Legacy path: company-currency base from ctr.paid_amount × target_exchange_rate.
     ctr_rate = flt(ctr.target_exchange_rate) or 1.0
     paid_amount_company = flt(ctr_paid * ctr_rate, 9)
 

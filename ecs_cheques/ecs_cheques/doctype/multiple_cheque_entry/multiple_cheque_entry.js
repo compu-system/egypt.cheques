@@ -627,6 +627,11 @@ function update_target_exchange_rate(frm, row, table_name, force) {
                 if (!row.cheque_currency) {
                     frappe.model.set_value(row.doctype, row.name, "cheque_currency", row.account_currency);
                 }
+                // Sync bidirectional rate fields
+                if (rate > 0) {
+                    frappe.model.set_value(row.doctype, row.name, "exchange_rate_mop_to_party", rate);
+                    frappe.model.set_value(row.doctype, row.name, "exchange_rate_party_to_mop", flt(1.0 / rate, 9));
+                }
                 update_amount_in_company_currency(frm, locals[row.doctype][row.name], table_name);
                 frm.refresh_field(table_name);
             });
@@ -1240,6 +1245,46 @@ frappe.ui.form.on("Cheque Table Receive", "target_exchange_rate", function(frm, 
     const row = locals[cdt][cdn];
     row._rate_manually_set = true;
     update_amount_in_company_currency(frm, row, 'cheque_table');
+    // Keep the bidirectional rate fields in sync with target_exchange_rate
+    _sync_mop_party_rates_from_target(frm, cdt, cdn, row);
+});
+
+// --- bidirectional exchange rate helpers (MOP↔Party) ---
+// Sync exchange_rate_mop_to_party and exchange_rate_party_to_mop from target_exchange_rate
+function _sync_mop_party_rates_from_target(frm, cdt, cdn, row) {
+    const rate = flt(row.target_exchange_rate);
+    if (rate <= 0 || frm._setting_exchange_rate) return;
+    frm._setting_exchange_rate = true;
+    frappe.model.set_value(cdt, cdn, "exchange_rate_mop_to_party", rate);
+    frappe.model.set_value(cdt, cdn, "exchange_rate_party_to_mop", flt(1.0 / rate, 9));
+    frm._setting_exchange_rate = false;
+}
+
+frappe.ui.form.on("Cheque Table Receive", "exchange_rate_mop_to_party", function(frm, cdt, cdn) {
+    if (frm._setting_exchange_rate) return;
+    const row = locals[cdt][cdn];
+    const val = flt(row.exchange_rate_mop_to_party);
+    if (val <= 0) return;
+    const reciprocal = flt(1.0 / val, 9);
+    // Only update if the value has actually changed to prevent circular updates.
+    if (Math.abs(flt(row.exchange_rate_party_to_mop) - reciprocal) < 1e-9) return;
+    frm._setting_exchange_rate = true;
+    frappe.model.set_value(cdt, cdn, "exchange_rate_party_to_mop", reciprocal);
+    frm._setting_exchange_rate = false;
+    update_amount_in_company_currency(frm, row, 'cheque_table');
+});
+
+frappe.ui.form.on("Cheque Table Receive", "exchange_rate_party_to_mop", function(frm, cdt, cdn) {
+    if (frm._setting_exchange_rate) return;
+    const row = locals[cdt][cdn];
+    const val = flt(row.exchange_rate_party_to_mop);
+    if (val <= 0) return;
+    const reciprocal = flt(1.0 / val, 9);
+    // Only update if the value has actually changed to prevent circular updates.
+    if (Math.abs(flt(row.exchange_rate_mop_to_party) - reciprocal) < 1e-9) return;
+    frm._setting_exchange_rate = true;
+    frappe.model.set_value(cdt, cdn, "exchange_rate_mop_to_party", reciprocal);
+    frm._setting_exchange_rate = false;
 });
 frappe.ui.form.on("Cheque Table Pay", "target_exchange_rate", function(frm, cdt, cdn) {
     const row = locals[cdt][cdn];

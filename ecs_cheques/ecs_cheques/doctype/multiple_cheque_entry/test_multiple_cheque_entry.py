@@ -355,9 +355,9 @@ class TestCreatePaymentEntryFromCheque(unittest.TestCase):
 		self.assertTrue(self._submitted, "Payment Entry must be submitted")
 
 		pe = self._inserted
-		self.assertAlmostEqual(pe.get("paid_amount"), 3159.059, places=3,
+		self.assertAlmostEqual(pe.get("paid_amount"), 3159.059, places=6,
 			msg="paid_amount must equal amount_in_company_currency (ILS)")
-		self.assertAlmostEqual(pe.get("received_amount"), 1000.0, places=3,
+		self.assertAlmostEqual(pe.get("received_amount"), 1000.0, places=6,
 			msg="received_amount must equal row.paid_amount (USD)")
 		self.assertAlmostEqual(pe.get("source_exchange_rate"), 1.0, places=6)
 		self.assertAlmostEqual(pe.get("target_exchange_rate"), 3.159059, places=6)
@@ -409,3 +409,163 @@ class TestCreatePaymentEntryFromCheque(unittest.TestCase):
 if __name__ == "__main__":
 	unittest.main()
 
+
+
+class TestExchangeRatePartyToMop(unittest.TestCase):
+	"""Tests for the bidirectional exchange-rate fields and their effect on PE creation.
+
+	Scenario: company currency = USD, party account = ILS, bank/MOP account = USD.
+	  exchange_rate_mop_to_party = 3.159059  (USD -> ILS)
+	  exchange_rate_party_to_mop = 0.316555  (ILS -> USD  = 1 / 3.159059)
+	"""
+
+	_RATE_MOP_TO_PARTY = 3.159059
+	_RATE_PARTY_TO_MOP = round(1.0 / 3.159059, 9)
+
+	# ------------------------------------------------------------------
+	# _compute_payment_entry_amounts with company = paid_to currency (USD)
+	# ------------------------------------------------------------------
+
+	def test_receive_company_equals_paid_to(self):
+		"""Receive: company = paid_to (USD). source = 1/stored_rate, target = 1."""
+		result = _compute_payment_entry_amounts(
+			row_paid_amount=1000.0,
+			paid_from_currency="ILS",
+			paid_to_currency="USD",
+			company_currency="USD",
+			stored_exchange_rate=self._RATE_MOP_TO_PARTY,
+			payment_type="Receive",
+		)
+		self.assertAlmostEqual(result["source_exchange_rate"], self._RATE_PARTY_TO_MOP, places=6,
+			msg="source_exchange_rate must be 1/stored_rate when paid_to = company currency")
+		self.assertAlmostEqual(result["target_exchange_rate"], 1.0, places=6,
+			msg="target_exchange_rate must be 1 when paid_to = company currency")
+		self.assertEqual(result["paid_from_account_currency"], "ILS")
+		self.assertEqual(result["paid_to_account_currency"], "USD")
+
+	def test_receive_company_equals_paid_to_gl_balance(self):
+		"""GL invariant: base_paid == base_received for company=USD scenario."""
+		result = _compute_payment_entry_amounts(
+			1000.0, "ILS", "USD", "USD", self._RATE_MOP_TO_PARTY, "Receive",
+		)
+		base_paid = result["paid_amount"] * result["source_exchange_rate"]
+		base_received = result["received_amount"] * result["target_exchange_rate"]
+		self.assertAlmostEqual(base_paid, base_received, places=2)
+
+	# ------------------------------------------------------------------
+	# create_payment_entry_from_cheque with exchange_rate_party_to_mop set
+	# ------------------------------------------------------------------
+
+	def _make_row_with_party_to_mop(self):
+		"""Row with exchange_rate_party_to_mop set (company=USD scenario)."""
+		return _Row(
+			name="ROW-002",
+			idx=1,
+			account_paid_from="ILS-Receivable",
+			account_paid_to="USD-Bank",
+			paid_amount=1000.0,
+			amount_in_company_currency=3159.059,
+			target_exchange_rate=3.159059,
+			exchange_rate_mop_to_party=3.159059,
+			exchange_rate_party_to_mop=round(1.0 / 3.159059, 9),
+			mode_of_payment="Cheque",
+			party_type="Customer",
+			party="CUST-002",
+			cheque_type="Crossed",
+			reference_no="CHQ-002",
+			reference_date="2024-01-15",
+			first_beneficiary="Company",
+			person_name="Sara",
+			issuer_name="Sara",
+			picture_of_check=None,
+			bank="Test Bank",
+			payment_entry=None,
+		)
+
+	def setUp(self):
+		import sys
+		self._frappe = sys.modules["frappe"]
+		self._inserted = {}
+		self._submitted = False
+		self._set_values = []
+
+		row = self._make_row_with_party_to_mop()
+		doc = _Doc(
+			name="MCE-002",
+			company="Test Co USD",
+			payment_type="Receive",
+			posting_date="2024-01-15",
+			mode_of_payment="Cheque",
+			mode_of_payment_type="Cheque",
+			cheque_bank="Test Bank",
+			bank_acc="Bank-USD",
+			cheque_table=[row],
+			cheque_table_2=[],
+		)
+
+		class _FakePE:
+			def __init__(inner_self, d):
+				inner_self.__dict__.update(d)
+				inner_self.name = "PE-TEST-002"
+				inner_self.flags = type("F", (), {"ignore_permissions": False})()
+
+			def insert(inner_self):
+				self._inserted = inner_self.__dict__.copy()
+
+			def submit(inner_self):
+				self._submitted = True
+
+		def _get_doc(arg, *rest):
+			if arg == "Multiple Cheque Entry":
+				return doc
+			return _FakePE(arg)
+
+		self._frappe.get_doc = _get_doc
+
+		class _DB:
+			def get_value(self, doctype, name, field):
+				if doctype == "Company":
+					return "USD"
+				if doctype == "Account":
+					if name == "ILS-Receivable":
+						return "ILS"
+					if name == "USD-Bank":
+						return "USD"
+				return None
+
+			def set_value(self_, doctype, name, field, value):
+				self._set_values.append((doctype, name, field, value))
+
+		self._frappe.db = _DB()
+		self._frappe.throw = lambda msg, exc=None: (_ for _ in ()).throw(Exception(msg))
+
+	def test_party_to_mop_used_as_source_exchange_rate(self):
+		"""exchange_rate_party_to_mop must become source_exchange_rate in the PE."""
+		create_payment_entry_from_cheque("MCE-002", "ROW-002")
+		pe = self._inserted
+		expected_source = round(1.0 / 3.159059, 9)
+		self.assertAlmostEqual(pe.get("source_exchange_rate"), expected_source, places=6,
+			msg="source_exchange_rate must equal exchange_rate_party_to_mop")
+
+	def test_gl_balance_with_party_to_mop(self):
+		"""base_paid == base_received when exchange_rate_party_to_mop is used."""
+		create_payment_entry_from_cheque("MCE-002", "ROW-002")
+		pe = self._inserted
+		base_paid = pe.get("paid_amount") * pe.get("source_exchange_rate")
+		base_received = pe.get("received_amount") * pe.get("target_exchange_rate")
+		self.assertAlmostEqual(base_paid, base_received, places=2,
+			msg="GL imbalance: base_paid={0} != base_received={1}".format(base_paid, base_received))
+
+	def test_received_amount_equals_cheque_amount(self):
+		"""received_amount must equal the original cheque amount (1000 USD)."""
+		create_payment_entry_from_cheque("MCE-002", "ROW-002")
+		pe = self._inserted
+		self.assertAlmostEqual(pe.get("received_amount"), 1000.0, places=6,
+			msg="received_amount must be the original cheque amount")
+
+	def test_paid_amount_equals_amount_in_company_currency(self):
+		"""paid_amount (ILS) must equal amount_in_company_currency (3159.059)."""
+		create_payment_entry_from_cheque("MCE-002", "ROW-002")
+		pe = self._inserted
+		self.assertAlmostEqual(pe.get("paid_amount"), 3159.059, places=6,
+			msg="paid_amount must equal amount_in_company_currency")

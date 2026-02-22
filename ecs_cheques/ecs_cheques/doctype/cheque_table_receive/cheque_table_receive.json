@@ -14,6 +14,8 @@
   "cheque_currency",
   "paid_amount",
   "target_exchange_rate",
+  "exchange_rate_mop_to_party",
+  "exchange_rate_party_to_mop",
   "amount_in_company_currency",
   "first_beneficiary",
   "issuer_name",
@@ -179,6 +181,16 @@
    "fieldname": "target_exchange_rate",
    "fieldtype": "Float",
    "label": "Exchange Rate"
+  },
+  {
+   "fieldname": "exchange_rate_mop_to_party",
+   "fieldtype": "Float",
+   "label": "Exchange Rate (MOP → Party)"
+  },
+  {
+   "fieldname": "exchange_rate_party_to_mop",
+   "fieldtype": "Float",
+   "label": "Exchange Rate (Party → MOP)"
   },
   {
    "fieldname": "party_name",
