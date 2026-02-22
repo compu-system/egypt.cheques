@@ -144,9 +144,9 @@ doctype_js = {
 # each overriding function accepts a `data` argument;
 # generated from the base implementation of the doctype dashboard,
 # along with any modifications made in other Frappe apps
-# override_doctype_dashboards = {
-# 	"Task": "ecs_cheques.task.get_dashboard_data"
-# }
+override_doctype_dashboards = {
+	"Payment Entry": "ecs_cheques.ecs_cheques.overrides.payment_entry.dashboard.get_dashboard_data"
+}
 
 # exempt linked doctypes from being automatically cancelled
 #
@@ -198,6 +198,12 @@ fixtures = [
     },
     {
         "dt": "Custom Field",
+        "filters": [
+            ["module", "=", "ECS Cheques"]
+        ]
+    },
+    {
+        "dt": "Print Format",
         "filters": [
             ["module", "=", "ECS Cheques"]
         ]

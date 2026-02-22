@@ -1,4 +1,40 @@
 frappe.ui.form.on("Payment Entry", {
+    before_save(frm) {
+        // Capture cheque_action value before saving so we can detect a change in after_save
+        frm.__cheque_action_before_save = frm.doc.cheque_action;
+    },
+
+    after_save(frm) {
+        const old_action = frm.__cheque_action_before_save;
+        const new_action = frm.doc.cheque_action;
+        // Reset so subsequent no-change saves don't re-trigger
+        frm.__cheque_action_before_save = new_action;
+
+        // Only show message when cheque_action actually changed to a non-empty value
+        if (old_action !== undefined && new_action && old_action !== new_action) {
+            frappe.db.get_list("Journal Entry", {
+                filters: {
+                    reference_doctype: "Payment Entry",
+                    reference_link: frm.doc.name
+                },
+                fields: ["name"],
+                order_by: "modified desc",
+                limit: 1
+            }).then(list => {
+                let msg = `تم إنشاء قيد يومية: <b>${new_action}</b>`;
+                if (list && list.length > 0) {
+                    const je_name = list[0].name;
+                    msg += `<br><a href="/app/journal-entry/${je_name}">${je_name}</a>`;
+                }
+                frappe.msgprint({
+                    title: __("قيد يومية"),
+                    indicator: "green",
+                    message: msg
+                });
+            });
+        }
+    },
+
     refresh(frm) {
         // Exchange rate hint: when reference_no and target_exchange_rate are set,
         // show a visual indicator: Exchange Rate: 1 ILS = (1 / target_exchange_rate) USD
