@@ -36,6 +36,10 @@ frappe.ui.form.on("Payment Entry", {
     },
 
     refresh(frm) {
+        // Issue 2: when both account currencies are the same, sync amounts and
+        // show an informational note instead of confusing exchange-rate fields.
+        ecs_sync_same_currency_amounts(frm);
+
         // Exchange rate hint: when reference_no and target_exchange_rate are set,
         // show a visual indicator: Exchange Rate: 1 ILS = (1 / target_exchange_rate) USD
         if (frm.doc.reference_no && frm.doc.target_exchange_rate && frm.doc.target_exchange_rate !== 1) {
@@ -106,5 +110,53 @@ frappe.ui.form.on("Payment Entry", {
         if (frm.doc.docstatus == "1" && frm.doc.mode_of_payment_type == "Cheque" && (frm.doc.cheque_status == "مظهر" || frm.doc.cheque_status == "محصل فوري" || frm.doc.cheque_status == "مردود" || frm.doc.cheque_status == "محصل" || frm.doc.cheque_status_pay == "مدفوع" || frm.doc.cheque_status_pay == "مسحوب")){
             set_field_options("cheque_action", [" "]);
         }
+    },
+
+    // Issue 2: re-sync when currency or amount fields change
+    paid_from_account_currency(frm) {
+        ecs_sync_same_currency_amounts(frm);
+    },
+
+    paid_to_account_currency(frm) {
+        ecs_sync_same_currency_amounts(frm);
+    },
+
+    paid_amount(frm) {
+        ecs_sync_same_currency_amounts(frm);
+    },
+
+    source_exchange_rate(frm) {
+        ecs_sync_same_currency_amounts(frm);
     }
 });
+
+/**
+ * Issue 2: when paid_from_account_currency == paid_to_account_currency,
+ * ensure received_amount == paid_amount and target_exchange_rate == source_exchange_rate.
+ * This prevents confusing "exchange rate" fields from causing validation errors
+ * in same-currency Payment Entries.
+ *
+ * A re-entry guard (_ecs_syncing) prevents infinite-loop scenarios where
+ * setting a field value triggers the same event handler recursively.
+ */
+function ecs_sync_same_currency_amounts(frm) {
+    if (frm._ecs_syncing) return;
+    if (!frm.doc.paid_from_account_currency || !frm.doc.paid_to_account_currency) return;
+    if (frm.doc.paid_from_account_currency !== frm.doc.paid_to_account_currency) return;
+
+    frm._ecs_syncing = true;
+    try {
+        // Sync received_amount = paid_amount
+        if (frm.doc.paid_amount && frm.doc.received_amount !== frm.doc.paid_amount) {
+            frappe.model.set_value(frm.doctype, frm.docname, "received_amount", frm.doc.paid_amount);
+        }
+
+        // Sync target_exchange_rate = source_exchange_rate
+        const src_rate = frm.doc.source_exchange_rate || 1;
+        if (frm.doc.target_exchange_rate !== src_rate) {
+            frappe.model.set_value(frm.doctype, frm.docname, "target_exchange_rate", src_rate);
+        }
+    } finally {
+        frm._ecs_syncing = false;
+    }
+}
