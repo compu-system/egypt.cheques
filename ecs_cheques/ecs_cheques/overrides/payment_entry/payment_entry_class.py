@@ -96,7 +96,7 @@ class CustomPaymentEntry(PaymentEntry):
 
     def _sync_amounts_for_same_currency(self):
         """When paid_from and paid_to accounts share the same currency, ensure
-        received_amount == paid_amount and exchange rates are consistent.
+        received_amount == paid_amount and exchange rates are 1.
 
         ERPNext already handles this inside set_target_exchange_rate/
         set_received_amount, but we add an explicit guard here so that amounts
@@ -107,10 +107,10 @@ class CustomPaymentEntry(PaymentEntry):
         if self.paid_from_account_currency != self.paid_to_account_currency:
             return
 
+        # Force exchange rates to 1 when currencies match
+        self.source_exchange_rate = 1
+        self.target_exchange_rate = 1
+
         # Sync received_amount
         if flt(self.paid_amount) and flt(self.received_amount) != flt(self.paid_amount):
             self.received_amount = self.paid_amount
-
-        # Sync target_exchange_rate with source_exchange_rate
-        if flt(self.source_exchange_rate) and flt(self.target_exchange_rate) != flt(self.source_exchange_rate):
-            self.target_exchange_rate = self.source_exchange_rate

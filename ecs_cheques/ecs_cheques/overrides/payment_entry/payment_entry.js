@@ -144,11 +144,16 @@ function ecs_sync_same_currency_amounts(frm) {
 
     const same_currency = frm.doc.paid_from_account_currency === frm.doc.paid_to_account_currency;
 
-    // Show or hide exchange rate fields based on currency match
+    // Show or hide exchange rate fields based on currency match (safe for all docstatus)
     frm.toggle_display("source_exchange_rate", !same_currency);
     frm.toggle_display("target_exchange_rate", !same_currency);
 
     if (!same_currency) return;
+
+    // Do NOT mutate field values on a submitted document – ERPNext prohibits
+    // changing exchange-rate fields after submission and would raise
+    // "Cannot Update After Submit".
+    if (frm.doc.docstatus === 1) return;
 
     frm._ecs_syncing = true;
     try {
