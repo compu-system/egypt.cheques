@@ -747,6 +747,7 @@ frappe.ui.form.on("Multiple Cheque Entry", "on_submit", function(frm) {
     if (!table || !table.length) return;
 
     const promises = [];
+    const created_entries = [];
 
     table.forEach((row) => {
         if (row.payment_entry) return; // already processed
@@ -759,7 +760,7 @@ frappe.ui.form.on("Multiple Cheque Entry", "on_submit", function(frm) {
                 args: { docname: frm.doc.name, row_id: row.name },
                 callback: function(r) {
                     if (r.message) {
-                        frappe.show_alert({ message: __("Payment Entry {0} Created", [r.message]), indicator: "green" });
+                        created_entries.push(r.message);
                     }
                     resolve();
                 },
@@ -770,6 +771,19 @@ frappe.ui.form.on("Multiple Cheque Entry", "on_submit", function(frm) {
 
     if (promises.length > 0) {
         Promise.all(promises).then(() => {
+            if (created_entries.length > 0) {
+                const links = created_entries.map(name =>
+                    `<a href="/app/payment-entry/${name}" target="_blank">${name}</a>`
+                ).join("<br>");
+                frappe.msgprint({
+                    title: __("Payment Entries Created"),
+                    indicator: "green",
+                    message: __(
+                        "تم إنشاء {0} قيد دفع من Multiple Cheque Entry:<br>{1}",
+                        [created_entries.length, links]
+                    )
+                });
+            }
             frm.reload_doc();
         });
     }
@@ -1290,6 +1304,50 @@ frappe.ui.form.on("Cheque Table Pay", "target_exchange_rate", function(frm, cdt,
     const row = locals[cdt][cdn];
     row._rate_manually_set = true;
     update_amount_in_company_currency(frm, row, 'cheque_table_2');
+});
+
+// --- Hide exchange rate fields in child row form when currencies are the same ---
+function _toggle_exchange_rate_fields(frm, cdt, cdn, table_fieldname) {
+    const row = locals[cdt][cdn];
+    if (!row) return;
+    const same = row.account_currency_from && row.account_currency &&
+        row.account_currency_from === row.account_currency;
+    const grid_row = frm.fields_dict[table_fieldname] &&
+        frm.fields_dict[table_fieldname].grid &&
+        frm.fields_dict[table_fieldname].grid.grid_rows_by_docname &&
+        frm.fields_dict[table_fieldname].grid.grid_rows_by_docname[cdn];
+    if (!grid_row || !grid_row.grid_form) return;
+    const gf = grid_row.grid_form;
+    ["target_exchange_rate", "exchange_rate_mop_to_party", "exchange_rate_party_to_mop"].forEach(fn => {
+        if (gf.fields_dict[fn]) {
+            gf.fields_dict[fn].df.hidden = same ? 1 : 0;
+            gf.fields_dict[fn].refresh();
+        }
+    });
+}
+
+frappe.ui.form.on("Cheque Table Receive", {
+    form_render: function(frm, cdt, cdn) {
+        _toggle_exchange_rate_fields(frm, cdt, cdn, 'cheque_table');
+    },
+    account_currency: function(frm, cdt, cdn) {
+        _toggle_exchange_rate_fields(frm, cdt, cdn, 'cheque_table');
+    },
+    account_currency_from: function(frm, cdt, cdn) {
+        _toggle_exchange_rate_fields(frm, cdt, cdn, 'cheque_table');
+    }
+});
+
+frappe.ui.form.on("Cheque Table Pay", {
+    form_render: function(frm, cdt, cdn) {
+        _toggle_exchange_rate_fields(frm, cdt, cdn, 'cheque_table_2');
+    },
+    account_currency: function(frm, cdt, cdn) {
+        _toggle_exchange_rate_fields(frm, cdt, cdn, 'cheque_table_2');
+    },
+    account_currency_from: function(frm, cdt, cdn) {
+        _toggle_exchange_rate_fields(frm, cdt, cdn, 'cheque_table_2');
+    }
 });
 
 // --- cheque_currency change: update account currency and refresh exchange rate ---

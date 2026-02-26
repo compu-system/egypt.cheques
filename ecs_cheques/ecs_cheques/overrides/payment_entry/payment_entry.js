@@ -132,9 +132,8 @@ frappe.ui.form.on("Payment Entry", {
 
 /**
  * Issue 2: when paid_from_account_currency == paid_to_account_currency,
- * ensure received_amount == paid_amount and target_exchange_rate == source_exchange_rate.
- * This prevents confusing "exchange rate" fields from causing validation errors
- * in same-currency Payment Entries.
+ * ensure received_amount == paid_amount and target_exchange_rate == source_exchange_rate == 1.
+ * Also hide exchange rate fields to avoid confusion.
  *
  * A re-entry guard (_ecs_syncing) prevents infinite-loop scenarios where
  * setting a field value triggers the same event handler recursively.
@@ -142,19 +141,28 @@ frappe.ui.form.on("Payment Entry", {
 function ecs_sync_same_currency_amounts(frm) {
     if (frm._ecs_syncing) return;
     if (!frm.doc.paid_from_account_currency || !frm.doc.paid_to_account_currency) return;
-    if (frm.doc.paid_from_account_currency !== frm.doc.paid_to_account_currency) return;
+
+    const same_currency = frm.doc.paid_from_account_currency === frm.doc.paid_to_account_currency;
+
+    // Show or hide exchange rate fields based on currency match
+    frm.toggle_display("source_exchange_rate", !same_currency);
+    frm.toggle_display("target_exchange_rate", !same_currency);
+
+    if (!same_currency) return;
 
     frm._ecs_syncing = true;
     try {
+        // Force exchange rates to 1 when currencies match
+        if (frm.doc.source_exchange_rate !== 1) {
+            frappe.model.set_value(frm.doctype, frm.docname, "source_exchange_rate", 1);
+        }
+        if (frm.doc.target_exchange_rate !== 1) {
+            frappe.model.set_value(frm.doctype, frm.docname, "target_exchange_rate", 1);
+        }
+
         // Sync received_amount = paid_amount
         if (frm.doc.paid_amount && frm.doc.received_amount !== frm.doc.paid_amount) {
             frappe.model.set_value(frm.doctype, frm.docname, "received_amount", frm.doc.paid_amount);
-        }
-
-        // Sync target_exchange_rate = source_exchange_rate
-        const src_rate = frm.doc.source_exchange_rate || 1;
-        if (frm.doc.target_exchange_rate !== src_rate) {
-            frappe.model.set_value(frm.doctype, frm.docname, "target_exchange_rate", src_rate);
         }
     } finally {
         frm._ecs_syncing = false;

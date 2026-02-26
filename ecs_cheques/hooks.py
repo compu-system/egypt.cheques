@@ -25,7 +25,7 @@ doctype_js = {
 
 # include js, css files in header of desk.html
 # app_include_css = "/assets/ecs_cheques/css/ecs_cheques.css"
-# app_include_js = "/assets/ecs_cheques/js/ecs_cheques.js"
+app_include_js = ["/assets/ecs_cheques/js/gl_report_fix.js"]
 
 # include js, css files in header of web template
 # web_include_css = "/assets/ecs_cheques/css/ecs_cheques.css"
@@ -95,6 +95,10 @@ doctype_js = {
 override_doctype_class = {
     "Payment Entry": "ecs_cheques.ecs_cheques.overrides.payment_entry.payment_entry_class.CustomPaymentEntry"
 }
+
+# Patch the ERPNext General Ledger report at server boot to fix per-row
+# account_currency when "Add Columns in Transaction Currency" is enabled.
+boot_session = "ecs_cheques.ecs_cheques.overrides.general_ledger.general_ledger.patch_general_ledger_report"
 
 # Document Events
 # ---------------
