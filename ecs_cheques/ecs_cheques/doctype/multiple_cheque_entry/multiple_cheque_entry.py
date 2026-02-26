@@ -176,8 +176,16 @@ def create_payment_entry_from_cheque(docname, row_id):
 	if paid_from_currency == paid_to_currency:
 		paid_amount = flt(row.paid_amount)
 		received_amount = flt(row.paid_amount)
-		source_exchange_rate = 1.0
-		target_exchange_rate = 1.0
+		if paid_from_currency == company_currency:
+			# Both accounts in company currency – no conversion needed.
+			source_exchange_rate = 1.0
+			target_exchange_rate = 1.0
+		else:
+			# Both accounts share the same non-company currency (e.g. both USD).
+			# Do not force rates to 1; leave them unset so ERPNext's validate()
+			# will fetch the correct foreign-currency → company-currency rate.
+			source_exchange_rate = None
+			target_exchange_rate = None
 	elif is_receive:
 		# paid_from = party account, paid_to = bank/MOP account.
 		paid_amount = flt(row.amount_in_company_currency)   # in paid_from currency
@@ -219,8 +227,6 @@ def create_payment_entry_from_cheque(docname, row_id):
 		"paid_to": paid_to,
 		"paid_from_account_currency": paid_from_currency,
 		"paid_to_account_currency": paid_to_currency,
-		"source_exchange_rate": source_exchange_rate,
-		"target_exchange_rate": target_exchange_rate,
 		"paid_amount": paid_amount,
 		"received_amount": received_amount,
 		"cheque_bank": doc.cheque_bank,
@@ -235,6 +241,14 @@ def create_payment_entry_from_cheque(docname, row_id):
 		"cheque_table_no": row.name if is_receive else None,
 		"cheque_table_no2": row.name if not is_receive else None,
 	}
+
+	# Only set exchange rates when they have a concrete value; leaving them
+	# unset (None) lets ERPNext's validate() fetch the correct rate for
+	# non-company-currency accounts.
+	if source_exchange_rate is not None:
+		pe_dict["source_exchange_rate"] = source_exchange_rate
+	if target_exchange_rate is not None:
+		pe_dict["target_exchange_rate"] = target_exchange_rate
 
 	if is_receive:
 		pe_dict["drawn_bank"] = row.bank
