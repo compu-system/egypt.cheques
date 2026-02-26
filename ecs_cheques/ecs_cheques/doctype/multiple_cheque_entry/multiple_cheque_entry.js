@@ -593,14 +593,18 @@ function update_target_exchange_rate(frm, row, table_name, force) {
     if (!row.account_currency_from || !row.account_currency) {
         return;
     }
-    // Skip auto-fetch if user has manually set the rate (unless forced)
-    if (!force && row._rate_manually_set) {
+
+    // When both accounts share the same currency, always reset exchange rate to 1
+    // and set amount_in_company_currency = paid_amount, regardless of any manual
+    // override — there is no conversion to apply.
+    if (row.account_currency_from === row.account_currency) {
+        frappe.model.set_value(row.doctype, row.name, "target_exchange_rate", 1);
         update_amount_in_company_currency(frm, row, table_name);
         return;
     }
 
-    if (row.account_currency_from === row.account_currency) {
-        frappe.model.set_value(row.doctype, row.name, "target_exchange_rate", 1);
+    // Skip auto-fetch if user has manually set the rate (unless forced)
+    if (!force && row._rate_manually_set) {
         update_amount_in_company_currency(frm, row, table_name);
         return;
     }
@@ -664,8 +668,11 @@ function update_target_exchange_rate(frm, row, table_name, force) {
 // Helper to calculate and set amount_in_company_currency
 function update_amount_in_company_currency(frm, row, table_name) {
     const amount = flt(row.paid_amount);
-    const rate = flt(row.target_exchange_rate);
-    const amt_company_currency = amount * (rate || 1);
+    // When both accounts share the same currency there is no conversion:
+    // amount_in_company_currency must equal paid_amount exactly.
+    const same_currency = row.account_currency_from && row.account_currency &&
+        row.account_currency_from === row.account_currency;
+    const amt_company_currency = same_currency ? amount : amount * (flt(row.target_exchange_rate) || 1);
     frappe.model.set_value(row.doctype, row.name, "amount_in_company_currency", amt_company_currency);
     frm.refresh_field(table_name);
 }
