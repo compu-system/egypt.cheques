@@ -117,8 +117,14 @@ def _fix_account_currency_per_row(data):
 			pe_currency = pe_account_currency_map.get((row["voucher_no"], account))
 			if pe_currency:
 				row["account_currency"] = pe_currency
+				# Keep transaction_currency in sync so the "Add Columns in
+				# Transaction Currency" columns display the correct symbol.
+				row["transaction_currency"] = pe_currency
 				continue
 
 		# Fall back to Account master currency for all other rows.
 		if account_currency_map.get(account):
-			row["account_currency"] = account_currency_map[account]
+			currency = account_currency_map[account]
+			row["account_currency"] = currency
+			if not row.get("transaction_currency"):
+				row["transaction_currency"] = currency
