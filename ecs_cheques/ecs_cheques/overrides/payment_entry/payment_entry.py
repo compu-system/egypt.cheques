@@ -116,6 +116,16 @@ def _get_cheque_paid_amount(doc, company_currency):
 
     exch_party_to_mop = flt(ctr.get("exchange_rate_party_to_mop") or 0)
 
+    # If the Payment Entry itself has the same currency on both sides, any stored
+    # exchange_rate_party_to_mop is meaningless (e.g. a stale value left over from
+    # when the accounts had different currencies).  Clear it so the fallback path
+    # (ctr.paid_amount × ctr.target_exchange_rate) is used instead of the
+    # bidirectional-rate path that would raise a false mismatch error.
+    pe_paid_from_currency = getattr(doc, "paid_from_account_currency", None) or ""
+    pe_paid_to_currency = getattr(doc, "paid_to_account_currency", None) or ""
+    if pe_paid_from_currency and pe_paid_to_currency and pe_paid_from_currency == pe_paid_to_currency:
+        exch_party_to_mop = 0
+
     # Detect the "same-currency pair" scenario: both accounts share the same
     # non-company currency (e.g. both ILS when company currency is USD).
     # In that case exchange_rate_party_to_mop = 1.0 is meaningless for

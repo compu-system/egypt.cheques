@@ -174,21 +174,37 @@ def create_payment_entry_from_cheque(docname, row_id):
 
 	# Derive amounts and exchange rates directly from DB-stored values.
 	if paid_from_currency == paid_to_currency:
-		paid_amount = flt(row.paid_amount)
-		received_amount = flt(row.paid_amount)
 		if paid_from_currency == company_currency:
 			# Both accounts in company currency – no conversion needed.
 			source_exchange_rate = 1.0
 			target_exchange_rate = 1.0
+			# Clear any stale exchange_rate_party_to_mop so that
+			# _get_cheque_paid_amount won't trigger a false mismatch error.
+			if is_receive and getattr(row, "exchange_rate_party_to_mop", None):
+				frappe.db.set_value("Cheque Table Receive", row.name,
+									"exchange_rate_party_to_mop", 0)
+			# Bug 2: when the cheque is in a foreign currency (e.g. JOD) but
+			# both accounts are in company currency (e.g. USD), paid_amount and
+			# received_amount must be the company-currency equivalent so that
+			# ERPNext does not create a spurious Exchange Gain/Loss entry.
+			cheque_currency = getattr(row, "cheque_currency", None) or ""
+			if cheque_currency and cheque_currency != company_currency:
+				rate = flt(row.target_exchange_rate) or 1.0
+				paid_amount = flt(row.paid_amount) * rate
+			else:
+				paid_amount = flt(row.paid_amount)
+			received_amount = paid_amount
 		else:
 			# Both accounts share the same non-company currency (e.g. both USD).
 			# Do not force rates to 1; leave them unset so ERPNext's validate()
 			# will fetch the correct foreign-currency → company-currency rate.
 			source_exchange_rate = None
 			target_exchange_rate = None
+			paid_amount = flt(row.paid_amount)
+			received_amount = flt(row.paid_amount)
 			# Clear any misleading exchange_rate_party_to_mop (e.g. 1.0 set by JS)
 			# so that _get_cheque_paid_amount won't use the bidirectional rate path.
-			if getattr(row, "exchange_rate_party_to_mop", None):
+			if is_receive and getattr(row, "exchange_rate_party_to_mop", None):
 				frappe.db.set_value("Cheque Table Receive", row.name,
 									"exchange_rate_party_to_mop", 0)
 	elif is_receive:

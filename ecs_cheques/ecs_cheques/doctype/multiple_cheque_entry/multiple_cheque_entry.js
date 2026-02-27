@@ -631,8 +631,12 @@ function update_target_exchange_rate(frm, row, table_name, force) {
                 if (!row.cheque_currency) {
                     frappe.model.set_value(row.doctype, row.name, "cheque_currency", row.account_currency);
                 }
-                // Sync bidirectional rate fields
-                if (rate > 0) {
+                // Sync bidirectional rate fields only when account currencies differ.
+                // When both accounts share the same currency, exchange_rate_party_to_mop
+                // is meaningless and must not be stored (it would cause a mismatch error
+                // later when validating the Payment Entry).
+                if (rate > 0 && row.account_currency && row.account_currency_from &&
+                        row.account_currency !== row.account_currency_from) {
                     frappe.model.set_value(row.doctype, row.name, "exchange_rate_mop_to_party", rate);
                     frappe.model.set_value(row.doctype, row.name, "exchange_rate_party_to_mop", flt(1.0 / rate, 9));
                 }
@@ -668,10 +672,15 @@ function update_target_exchange_rate(frm, row, table_name, force) {
 // Helper to calculate and set amount_in_company_currency
 function update_amount_in_company_currency(frm, row, table_name) {
     const amount = flt(row.paid_amount);
-    // When both accounts share the same currency there is no conversion:
-    // amount_in_company_currency must equal paid_amount exactly.
-    const same_currency = row.account_currency_from && row.account_currency &&
-        row.account_currency_from === row.account_currency;
+    // When cheque_currency, account_currency_from, and account_currency all match,
+    // the amount is already in the correct currency (no conversion needed).
+    // If the cheque currency differs from either account currency (e.g. a JOD cheque
+    // deposited into a USD account), multiply by target_exchange_rate to get the
+    // company-currency equivalent.
+    const cheque_currency = row.cheque_currency || row.account_currency;
+    const same_currency = cheque_currency && row.account_currency_from && row.account_currency &&
+        cheque_currency === row.account_currency_from &&
+        cheque_currency === row.account_currency;
     const amt_company_currency = same_currency ? amount : amount * (flt(row.target_exchange_rate) || 1);
     frappe.model.set_value(row.doctype, row.name, "amount_in_company_currency", amt_company_currency);
     frm.refresh_field(table_name);
