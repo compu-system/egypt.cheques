@@ -96,21 +96,35 @@ class CustomPaymentEntry(PaymentEntry):
 
     def _sync_amounts_for_same_currency(self):
         """When paid_from and paid_to accounts share the same currency, ensure
-        received_amount == paid_amount and exchange rates are 1.
+        received_amount == paid_amount.
 
-        ERPNext already handles this inside set_target_exchange_rate/
-        set_received_amount, but we add an explicit guard here so that amounts
-        are always coherent even if set_amounts() was skipped for some reason.
+        Exchange rates are forced to 1 only when the shared account currency is
+        also the company default currency (no conversion is needed).  When the
+        shared currency is NOT the company currency (e.g. both accounts are ILS
+        but company is USD), the correct rate must come from Currency Exchange –
+        forcing it to 1 would produce wrong GL base amounts.
+
+        Mutations are skipped entirely for submitted documents.
         """
         if not (self.paid_from_account_currency and self.paid_to_account_currency):
             return
         if self.paid_from_account_currency != self.paid_to_account_currency:
             return
 
-        # Force exchange rates to 1 when currencies match
-        self.source_exchange_rate = 1
-        self.target_exchange_rate = 1
+        # Do not attempt to mutate rates or amounts on a submitted document.
+        if self.docstatus != 0:
+            return
 
-        # Sync received_amount
+        # Only force exchange rates to 1 when account currency IS the company
+        # default currency.  For foreign-currency same-currency pairs the ERPNext
+        # standard logic will obtain the correct rate from Currency Exchange.
+        company_currency = frappe.get_cached_value(
+            "Company", self.company, "default_currency"
+        )
+        if self.paid_from_account_currency == company_currency:
+            self.source_exchange_rate = 1
+            self.target_exchange_rate = 1
+
+        # Always sync received_amount == paid_amount when account currencies match.
         if flt(self.paid_amount) and flt(self.received_amount) != flt(self.paid_amount):
             self.received_amount = self.paid_amount

@@ -126,5 +126,8 @@ def _fix_account_currency_per_row(data):
 		if account_currency_map.get(account):
 			currency = account_currency_map[account]
 			row["account_currency"] = currency
-			if not row.get("transaction_currency"):
-				row["transaction_currency"] = currency
+			# Always keep transaction_currency in sync with account_currency so
+			# the "Add Columns in Transaction Currency" columns display the
+			# correct symbol even when the GL report pre-populated the field
+			# with a different (e.g. company) currency.
+			row["transaction_currency"] = currency
