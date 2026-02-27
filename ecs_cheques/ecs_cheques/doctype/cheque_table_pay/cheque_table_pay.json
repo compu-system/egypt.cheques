@@ -60,7 +60,8 @@
    "in_list_view": 1,
    "label": "Amount",
    "options": "account_currency_from",
-   "reqd": 1
+   "reqd": 1,
+   "no_copy": 1
   },
   {
    "columns": 1,
@@ -98,7 +99,8 @@
    "fieldtype": "Data",
    "in_list_view": 1,
    "label": "Cheque No",
-   "reqd": 1
+   "reqd": 1,
+   "no_copy": 1
   },
   {
    "columns": 1,
@@ -106,7 +108,8 @@
    "fieldtype": "Date",
    "in_list_view": 1,
    "label": "Cheque Date",
-   "reqd": 1
+   "reqd": 1,
+   "no_copy": 1
   },
   {
    "columns": 1,
@@ -144,7 +147,8 @@
    "fieldname": "picture_of_check",
    "fieldtype": "Attach",
    "in_list_view": 1,
-   "label": "Attach"
+   "label": "Attach",
+   "no_copy": 1
   },
   {
    "columns": 1,
@@ -157,7 +161,8 @@
    "default": "1",
    "fieldname": "target_exchange_rate",
    "fieldtype": "Float",
-   "label": "Exchange Rate"
+   "label": "Exchange Rate",
+   "no_copy": 1
   },
   {
    "columns": 1,
@@ -174,7 +179,8 @@
    "in_list_view": 1,
    "label": "Amount (Party Account Currency)",
    "options": "account_currency",
-   "read_only": 1
+   "read_only": 1,
+   "no_copy": 1
   },
   {
    "allow_on_submit": 1,
@@ -182,7 +188,8 @@
    "fieldtype": "Link",
    "label": "Payment Entry",
    "options": "Payment Entry",
-   "read_only": 1
+   "read_only": 1,
+   "no_copy": 1
   }
  ],
  "index_web_pages_for_search": 1,
