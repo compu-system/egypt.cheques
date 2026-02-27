@@ -1275,6 +1275,14 @@ frappe.ui.form.on("Cheque Table Receive", "target_exchange_rate", function(frm, 
 function _sync_mop_party_rates_from_target(frm, cdt, cdn, row) {
     const rate = flt(row.target_exchange_rate);
     if (rate <= 0 || frm._setting_exchange_rate) return;
+
+    // Don't set bidirectional rates when both accounts share the same currency
+    // as it would store a meaningless 1.0 that confuses later validation.
+    if (row.account_currency_from && row.account_currency &&
+        row.account_currency_from === row.account_currency) {
+        return;
+    }
+
     frm._setting_exchange_rate = true;
     frappe.model.set_value(cdt, cdn, "exchange_rate_mop_to_party", rate);
     frappe.model.set_value(cdt, cdn, "exchange_rate_party_to_mop", flt(1.0 / rate, 9));

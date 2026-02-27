@@ -17,6 +17,7 @@ __version__ = '0.0.1'
 # ---------------------------------------------------------------------------
 try:
     import erpnext.accounts.report.general_ledger.general_ledger as _gl_report
+    from ecs_cheques.ecs_cheques.overrides.general_ledger.general_ledger import _fix_account_currency_per_row
 
     _orig_get_result_as_list = _gl_report.get_result_as_list
 
@@ -24,6 +25,10 @@ try:
         result = _orig_get_result_as_list(data, filters)
 
         if filters.get("add_values_in_transaction_currency"):
+            # First: fix per-row account_currency from Payment Entry / Account master
+            _fix_account_currency_per_row(result)
+
+            # Then: fallback for any remaining rows without transaction_currency
             fallback_currency = (
                 filters.get("account_currency")
                 or filters.get("presentation_currency")
@@ -31,8 +36,6 @@ try:
             )
             for row in result:
                 if not row.get("transaction_currency"):
-                    # Use the row's own account_currency if available,
-                    # otherwise fall back to the report-level filter currency.
                     row["transaction_currency"] = (
                         row.get("account_currency") or fallback_currency
                     )
