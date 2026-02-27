@@ -300,6 +300,81 @@ class TestGetChequePaidAmount(unittest.TestCase):
             result = _get_cheque_paid_amount(doc, "USD")
         self.assertGreater(result, 0)
 
+    def test_usd_to_usd_company_currency_ignores_stale_exch_party_to_mop(self):
+        """Bug 1: USD→USD PE (company=USD) must NOT throw even with stale exchange_rate_party_to_mop.
+
+        Root cause: after editing a cheque row that previously had ILS→USD accounts,
+        exchange_rate_party_to_mop could retain a stale value (e.g. 0.31655 = 1/3.159059).
+        When both PE account currencies are USD the value is meaningless and must be
+        ignored entirely so the legacy path (ctr.paid_amount × ctr.target_exchange_rate)
+        is used instead.
+        """
+        ctr = _mock_cheque_table(
+            paid_amount=1000.0,
+            target_exchange_rate=1.0,
+            exchange_rate_party_to_mop=0.31655,   # stale ILS→USD rate
+            account_currency_from="USD",
+            account_currency="USD",
+        )
+        doc = _make_doc(
+            cheque_table_no="CHQ-USD-USD",
+            paid_amount=1000.0,
+            source_exchange_rate=1.0,
+            paid_from_account_currency="USD",
+            paid_to_account_currency="USD",
+        )
+        with patch.object(frappe.db, "get_value", return_value=ctr):
+            # Must NOT raise a mismatch error
+            result = _get_cheque_paid_amount(doc, "USD")
+        self.assertAlmostEqual(result, 1000.0, places=2)
+
+    def test_usd_to_usd_company_currency_returns_legacy_amount(self):
+        """USD→USD (company=USD): result must be ctr.paid_amount × ctr.target_exchange_rate."""
+        ctr = _mock_cheque_table(
+            paid_amount=1000.0,
+            target_exchange_rate=1.0,
+            exchange_rate_party_to_mop=0.31655,   # stale value, must be ignored
+            account_currency_from="USD",
+            account_currency="USD",
+        )
+        doc = _make_doc(
+            cheque_table_no="CHQ-USD-USD-2",
+            paid_amount=1000.0,
+            source_exchange_rate=1.0,
+            paid_from_account_currency="USD",
+            paid_to_account_currency="USD",
+        )
+        with patch.object(frappe.db, "get_value", return_value=ctr):
+            result = _get_cheque_paid_amount(doc, "USD")
+        self.assertAlmostEqual(result, 1000.0, places=2)
+
+    def test_jod_cheque_usd_accounts_returns_converted_amount(self):
+        """Bug 2: JOD cheque, both accounts USD, company USD → result must use target_exchange_rate.
+
+        When a JOD cheque is deposited via a USD-account PE, ctr.target_exchange_rate is
+        the JOD→USD rate (e.g. 1.41044) and ctr.paid_amount is the JOD face value (1000).
+        The PE paid_amount has already been set to 1000 × 1.41044 = 1410.44 (USD) by the
+        Python fix in create_payment_entry_from_cheque.  The legacy path in
+        _get_cheque_paid_amount must return 1000 × 1.41044 = 1410.44.
+        """
+        ctr = _mock_cheque_table(
+            paid_amount=1000.0,
+            target_exchange_rate=1.41044,   # JOD → USD
+            exchange_rate_party_to_mop=0,
+            account_currency_from="USD",
+            account_currency="USD",
+        )
+        doc = _make_doc(
+            cheque_table_no="CHQ-JOD-USD",
+            paid_amount=1410.44,             # USD equivalent set by PE creation fix
+            source_exchange_rate=1.0,
+            paid_from_account_currency="USD",
+            paid_to_account_currency="USD",
+        )
+        with patch.object(frappe.db, "get_value", return_value=ctr):
+            result = _get_cheque_paid_amount(doc, "USD")
+        self.assertAlmostEqual(result, 1410.44, places=2)
+
 
 # ---------------------------------------------------------------------------
 # Tests for JE account balance using _je_account
