@@ -375,6 +375,57 @@ class TestGetChequePaidAmount(unittest.TestCase):
             result = _get_cheque_paid_amount(doc, "USD")
         self.assertAlmostEqual(result, 1410.44, places=2)
 
+    def test_jod_cross_account_no_mismatch_error(self):
+        """JOD→USD cross-currency (paid_from=USD=company, paid_to=JOD) must NOT raise.
+
+        Scenario from PAY-2026-00041: company=USD, paid_from=USD, paid_to=JOD.
+        exch_party_to_mop=0.709 is stored on the Cheque Table Receive row but
+        source_exchange_rate on the PE is 1.0 (USD = company currency).
+        The bidirectional-rate mismatch check must be skipped because the
+        paid_from account is already in company currency.
+        """
+        ctr = _mock_cheque_table(
+            paid_amount=1000.0,
+            target_exchange_rate=1.410437,
+            exchange_rate_party_to_mop=0.709,   # JOD → USD rate on the row
+            account_currency_from="USD",
+            account_currency="JOD",
+        )
+        doc = _make_doc(
+            cheque_table_no="CHQ-JOD-CROSS",
+            paid_amount=1410.437,
+            source_exchange_rate=1.0,            # USD = company currency
+            target_exchange_rate=1.410437,
+            paid_from_account_currency="USD",
+            paid_to_account_currency="JOD",
+        )
+        with patch.object(frappe.db, "get_value", return_value=ctr):
+            # Must NOT raise a mismatch error
+            result = _get_cheque_paid_amount(doc, "USD")
+        self.assertAlmostEqual(result, 1410.437, places=2)
+
+    def test_jod_cross_account_returns_usd_amount(self):
+        """JOD→USD cross-currency: returned amount must be the USD equivalent (1410.437)."""
+        ctr = _mock_cheque_table(
+            paid_amount=1000.0,
+            target_exchange_rate=1.410437,
+            exchange_rate_party_to_mop=0.709,
+            account_currency_from="USD",
+            account_currency="JOD",
+        )
+        doc = _make_doc(
+            cheque_table_no="CHQ-JOD-CROSS-2",
+            paid_amount=1410.437,
+            source_exchange_rate=1.0,
+            target_exchange_rate=1.410437,
+            paid_from_account_currency="USD",
+            paid_to_account_currency="JOD",
+        )
+        with patch.object(frappe.db, "get_value", return_value=ctr):
+            result = _get_cheque_paid_amount(doc, "USD")
+        # Legacy path: 1000 × 1.410437 = 1410.437
+        self.assertAlmostEqual(result, 1410.437, places=2)
+
 
 # ---------------------------------------------------------------------------
 # Tests for JE account balance using _je_account
