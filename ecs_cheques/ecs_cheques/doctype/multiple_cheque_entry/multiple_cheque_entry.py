@@ -212,16 +212,18 @@ def create_payment_entry_from_cheque(docname, row_id):
 		paid_amount = flt(row.amount_in_company_currency)   # in paid_from currency
 		received_amount = flt(row.paid_amount)              # in paid_to currency
 		exch_party_to_mop = flt(getattr(row, "exchange_rate_party_to_mop", 0))
-		if exch_party_to_mop > 0:
-			# Explicit bidirectional rate provided: use it as source_exchange_rate.
+		if exch_party_to_mop > 0 and paid_from_currency != company_currency and paid_to_currency != company_currency:
+			# Both accounts in non-company currencies: use bidirectional rate as source.
 			# target_exchange_rate satisfies: paid_amount * source = received * target
 			source_exchange_rate = exch_party_to_mop
 			target_exchange_rate = flt(
 				paid_amount * source_exchange_rate / received_amount if received_amount else 1.0, 9
 			)
 		elif paid_from_currency == company_currency:
+			# paid_from is company currency → source rate must be 1.
+			# target_exchange_rate converts paid_to (foreign) → company_currency.
 			source_exchange_rate = 1.0
-			target_exchange_rate = stored_rate          # paid_to_currency → company_currency
+			target_exchange_rate = flt(paid_amount / received_amount, 9) if received_amount > 0 else stored_rate
 		else:
 			# paid_to_currency == company_currency
 			source_exchange_rate = flt(1.0 / stored_rate, 9) if stored_rate else 1.0

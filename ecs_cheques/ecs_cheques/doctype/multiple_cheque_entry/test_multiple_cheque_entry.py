@@ -823,3 +823,173 @@ class TestJodChequeUsdAccounts(unittest.TestCase):
 		pe = self._inserted
 		self.assertNotAlmostEqual(pe.get("paid_amount"), 1000.0, places=1,
 			msg="paid_amount must not be the raw JOD amount – it must be converted to USD")
+
+
+# ---------------------------------------------------------------------------
+# JOD→USD cross-currency: paid_from=USD (company), paid_to=JOD
+# Issue: exch_party_to_mop=0.709 was wrongly used as source_exchange_rate,
+# causing $410 Exchange Gain/Loss
+# ---------------------------------------------------------------------------
+
+class TestJodToUsdCrossAccountReceive(unittest.TestCase):
+	"""JOD cheque with USD paid_from (company currency) and JOD paid_to account.
+
+	Scenario (from PAY-2026-00041):
+	  company_currency              = USD
+	  paid_from account currency    = USD  (= company currency)
+	  paid_to account currency      = JOD  (≠ company currency)
+	  row.paid_amount               = 1,000 JOD (cheque face value)
+	  row.amount_in_company_currency= 1,410.437 USD
+	  row.target_exchange_rate      = 1.410
+	  row.exchange_rate_party_to_mop= 0.709   (JOD → USD)
+
+	Expected Payment Entry:
+	  paid_amount          = 1,410.437 USD  (paid_from currency = company currency)
+	  received_amount      = 1,000     JOD
+	  source_exchange_rate = 1.0            (USD = company currency)
+	  target_exchange_rate ≈ 1.410437       (JOD → USD)
+	  Exchange Gain/Loss   = $0.00
+	"""
+
+	_JOD_RATE = 1.410
+	_EXCH_PARTY_TO_MOP = 0.709
+	_PAID_AMOUNT_USD = 1410.437
+	_CHEQUE_JOD = 1000.0
+
+	def _make_jod_cross_row(self):
+		return _Row(
+			name="ROW-JOD-CROSS",
+			idx=1,
+			account_paid_from="USD-Receivable",
+			account_paid_to="JOD-Wallet",
+			paid_amount=self._CHEQUE_JOD,
+			amount_in_company_currency=self._PAID_AMOUNT_USD,
+			target_exchange_rate=self._JOD_RATE,
+			exchange_rate_mop_to_party=self._JOD_RATE,
+			exchange_rate_party_to_mop=self._EXCH_PARTY_TO_MOP,
+			cheque_currency="JOD",
+			mode_of_payment="Cheque",
+			party_type="Customer",
+			party="CUST-JOD-CROSS",
+			cheque_type="Crossed",
+			reference_no="CHQ-JOD-CROSS-001",
+			reference_date="2024-01-15",
+			first_beneficiary="Company",
+			person_name="Test",
+			issuer_name="Test",
+			picture_of_check=None,
+			bank="JOD Bank",
+			payment_entry=None,
+		)
+
+	def setUp(self):
+		import sys
+		self._frappe = sys.modules["frappe"]
+		self._inserted = {}
+		self._submitted = False
+		self._set_values = []
+
+		row = self._make_jod_cross_row()
+		doc = _Doc(
+			name="MCE-JOD-CROSS",
+			company="USD Co",
+			payment_type="Receive",
+			posting_date="2024-01-15",
+			mode_of_payment="Cheque",
+			mode_of_payment_type="Cheque",
+			cheque_bank="JOD Bank",
+			bank_acc="Bank-JOD",
+			cheque_table=[row],
+			cheque_table_2=[],
+		)
+
+		class _FakePE:
+			def __init__(inner_self, d):
+				inner_self.__dict__.update(d)
+				inner_self.name = "PE-JOD-CROSS-001"
+				inner_self.flags = type("F", (), {"ignore_permissions": False})()
+
+			def insert(inner_self):
+				self._inserted = inner_self.__dict__.copy()
+
+			def submit(inner_self):
+				self._submitted = True
+
+		def _get_doc(arg, *rest):
+			if arg == "Multiple Cheque Entry":
+				return doc
+			return _FakePE(arg)
+
+		self._frappe.get_doc = _get_doc
+
+		class _DB:
+			def get_value(self, doctype, name, field):
+				if doctype == "Company":
+					return "USD"
+				if doctype == "Account":
+					if name == "USD-Receivable":
+						return "USD"
+					if name == "JOD-Wallet":
+						return "JOD"
+				return None
+
+			def set_value(self_, doctype, name, field, value):
+				self._set_values.append((doctype, name, field, value))
+
+		self._frappe.db = _DB()
+		self._frappe.throw = lambda msg, exc=None: (_ for _ in ()).throw(Exception(msg))
+
+	def test_source_exchange_rate_is_one(self):
+		"""source_exchange_rate must be 1.0 because paid_from=USD=company_currency."""
+		create_payment_entry_from_cheque("MCE-JOD-CROSS", "ROW-JOD-CROSS")
+		pe = self._inserted
+		self.assertAlmostEqual(pe.get("source_exchange_rate"), 1.0, places=6,
+			msg="source_exchange_rate must be 1 when paid_from = company currency (USD)")
+
+	def test_target_exchange_rate_is_jod_to_usd(self):
+		"""target_exchange_rate must reflect the JOD→USD rate (~1.410), not 1.0."""
+		create_payment_entry_from_cheque("MCE-JOD-CROSS", "ROW-JOD-CROSS")
+		pe = self._inserted
+		self.assertAlmostEqual(pe.get("target_exchange_rate"),
+			self._PAID_AMOUNT_USD / self._CHEQUE_JOD, places=4,
+			msg="target_exchange_rate must equal paid_amount_usd / jod_amount ≈ 1.410437")
+		self.assertGreater(pe.get("target_exchange_rate"), 1.0,
+			msg="target_exchange_rate must be > 1 for JOD→USD (JOD is worth more than USD)")
+
+	def test_paid_amount_is_usd(self):
+		"""paid_amount must be the USD equivalent (1410.437), not 1000 JOD."""
+		create_payment_entry_from_cheque("MCE-JOD-CROSS", "ROW-JOD-CROSS")
+		pe = self._inserted
+		self.assertAlmostEqual(pe.get("paid_amount"), self._PAID_AMOUNT_USD, places=3,
+			msg="paid_amount must be the USD equivalent")
+
+	def test_received_amount_is_jod(self):
+		"""received_amount must equal the JOD cheque face value (1000)."""
+		create_payment_entry_from_cheque("MCE-JOD-CROSS", "ROW-JOD-CROSS")
+		pe = self._inserted
+		self.assertAlmostEqual(pe.get("received_amount"), self._CHEQUE_JOD, places=3,
+			msg="received_amount must equal the JOD cheque amount")
+
+	def test_no_exchange_gain_loss(self):
+		"""GL base amounts must be equal → no Exchange Gain/Loss entry.
+
+		base_paid     = paid_amount    × source_exchange_rate = 1410.437 × 1.0
+		base_received = received_amount × target_exchange_rate = 1000 × 1.410437
+		Both must equal 1410.437 USD.
+		"""
+		create_payment_entry_from_cheque("MCE-JOD-CROSS", "ROW-JOD-CROSS")
+		pe = self._inserted
+		base_paid = pe.get("paid_amount") * pe.get("source_exchange_rate")
+		base_received = pe.get("received_amount") * pe.get("target_exchange_rate")
+		self.assertAlmostEqual(base_paid, base_received, places=2,
+			msg="GL imbalance would cause Exchange Gain/Loss: "
+			"base_paid={0} ≠ base_received={1}".format(base_paid, base_received))
+
+	def test_exch_party_to_mop_not_used_as_source(self):
+		"""exchange_rate_party_to_mop (0.709) must NOT become source_exchange_rate."""
+		create_payment_entry_from_cheque("MCE-JOD-CROSS", "ROW-JOD-CROSS")
+		pe = self._inserted
+		self.assertNotAlmostEqual(pe.get("source_exchange_rate"), self._EXCH_PARTY_TO_MOP,
+			places=3,
+			msg="exchange_rate_party_to_mop must not be used as source_exchange_rate "
+			"when paid_from = company currency")

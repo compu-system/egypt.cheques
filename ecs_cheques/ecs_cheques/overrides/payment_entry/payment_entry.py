@@ -142,16 +142,20 @@ def _get_cheque_paid_amount(doc, company_currency):
     if exch_party_to_mop > 0 and not same_non_company_currency:
         # Bidirectional rate path: company-currency base is
         # PE.paid_amount × source_exchange_rate (= exchange_rate_party_to_mop).
-        pe_source = flt(doc.source_exchange_rate) or 1.0
-        if abs(pe_source - exch_party_to_mop) / exch_party_to_mop > 0.01:
-            frappe.throw(
-                _(
-                    "Payment Entry source_exchange_rate ({0}) does not match "
-                    "exchange_rate_party_to_mop ({1}) from Cheque Table Receive '{2}'. "
-                    "Please recreate the Payment Entry."
-                ).format(pe_source, exch_party_to_mop, doc.cheque_table_no)
-            )
-        return flt(flt(doc.paid_amount) * pe_source, 9)
+        # Exception: when paid_from is already in company currency, source_exchange_rate
+        # is necessarily 1.0 and does not equal exch_party_to_mop – fall through to the
+        # legacy path (ctr.paid_amount × ctr.target_exchange_rate) instead.
+        if not (pe_paid_from_currency and pe_paid_from_currency == company_currency):
+            pe_source = flt(doc.source_exchange_rate) or 1.0
+            if abs(pe_source - exch_party_to_mop) / exch_party_to_mop > 0.01:
+                frappe.throw(
+                    _(
+                        "Payment Entry source_exchange_rate ({0}) does not match "
+                        "exchange_rate_party_to_mop ({1}) from Cheque Table Receive '{2}'. "
+                        "Please recreate the Payment Entry."
+                    ).format(pe_source, exch_party_to_mop, doc.cheque_table_no)
+                )
+            return flt(flt(doc.paid_amount) * pe_source, 9)
 
     if same_non_company_currency:
         # Both accounts share the same non-company currency: trust the PE's
