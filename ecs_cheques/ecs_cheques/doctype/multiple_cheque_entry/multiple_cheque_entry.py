@@ -186,6 +186,11 @@ def create_payment_entry_from_cheque(docname, row_id):
 			# will fetch the correct foreign-currency → company-currency rate.
 			source_exchange_rate = None
 			target_exchange_rate = None
+			# Clear any misleading exchange_rate_party_to_mop (e.g. 1.0 set by JS)
+			# so that _get_cheque_paid_amount won't use the bidirectional rate path.
+			if getattr(row, "exchange_rate_party_to_mop", None):
+				frappe.db.set_value("Cheque Table Receive", row.name,
+									"exchange_rate_party_to_mop", 0)
 	elif is_receive:
 		# paid_from = party account, paid_to = bank/MOP account.
 		paid_amount = flt(row.amount_in_company_currency)   # in paid_from currency

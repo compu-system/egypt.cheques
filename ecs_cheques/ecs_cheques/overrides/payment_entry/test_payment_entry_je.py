@@ -106,14 +106,32 @@ def _make_doc(**kwargs):
     return doc
 
 
-def _mock_cheque_table(paid_amount, target_exchange_rate):
-    """Return a namespace that mimics frappe.db.get_value(..., as_dict=True).
+class _FrappeDict(dict):
+    """Minimal frappe._dict mimic: a dict that also supports attribute access."""
+    def __getattr__(self, key):
+        try:
+            return self[key]
+        except KeyError:
+            return None
+
+    def __setattr__(self, key, value):
+        self[key] = value
+
+
+def _mock_cheque_table(paid_amount, target_exchange_rate, exchange_rate_party_to_mop=0,
+                       account_currency_from="", account_currency=""):
+    """Return a dict-like object that mimics frappe.db.get_value(..., as_dict=True).
 
     frappe.db.get_value with as_dict=True returns a frappe._dict which supports
-    both dict-style and attribute-style access.  types.SimpleNamespace gives us
-    attribute-style access (ctr.paid_amount) without requiring a real Frappe env.
+    both dict-style (.get()) and attribute-style access.
     """
-    return types.SimpleNamespace(paid_amount=paid_amount, target_exchange_rate=target_exchange_rate)
+    return _FrappeDict(
+        paid_amount=paid_amount,
+        target_exchange_rate=target_exchange_rate,
+        exchange_rate_party_to_mop=exchange_rate_party_to_mop,
+        account_currency_from=account_currency_from,
+        account_currency=account_currency,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -235,6 +253,52 @@ class TestGetChequePaidAmount(unittest.TestCase):
         with patch.object(frappe.db, "get_value", return_value=ctr):
             result = _get_cheque_paid_amount(doc, "ILS")
         self.assertAlmostEqual(result, 5000.0, places=3)
+
+    def test_same_non_company_currency_uses_source_exchange_rate(self):
+        """When both accounts are ILS but company is USD, use PE source_exchange_rate.
+
+        Bug scenario: Paid From and Paid To both ILS, company USD.
+        JS sets exchange_rate_party_to_mop = 1.0 (meaningless).
+        ERPNext validate sets source_exchange_rate = 0.31655 (ILS → USD).
+        _get_cheque_paid_amount must NOT raise and must return
+        paid_amount × source_exchange_rate = 5000 × 0.31655 = 1582.75.
+        """
+        ctr = _mock_cheque_table(
+            paid_amount=5000.0,
+            target_exchange_rate=0.31655,
+            exchange_rate_party_to_mop=1.0,   # set by JS for same-currency pair
+            account_currency_from="ILS",
+            account_currency="ILS",
+        )
+        doc = _make_doc(
+            cheque_table_no="CHQ-SAME-ILS",
+            paid_amount=5000.0,
+            source_exchange_rate=0.31655,      # ILS → USD set by ERPNext validate
+        )
+        with patch.object(frappe.db, "get_value", return_value=ctr):
+            result = _get_cheque_paid_amount(doc, "USD")
+        self.assertAlmostEqual(result, 1582.75, places=2)
+
+    def test_same_non_company_currency_no_throw_on_rate_mismatch(self):
+        """Same-currency pair must NOT throw even when source_exchange_rate != exchange_rate_party_to_mop."""
+        ctr = _mock_cheque_table(
+            paid_amount=5000.0,
+            target_exchange_rate=0.31655,
+            exchange_rate_party_to_mop=1.0,
+            account_currency_from="ILS",
+            account_currency="ILS",
+        )
+        # source_exchange_rate differs from exchange_rate_party_to_mop by >1%
+        # but must NOT raise because the same-currency path skips the check.
+        doc = _make_doc(
+            cheque_table_no="CHQ-SAME-ILS-2",
+            paid_amount=5000.0,
+            source_exchange_rate=0.31655,
+        )
+        with patch.object(frappe.db, "get_value", return_value=ctr):
+            # Should not raise
+            result = _get_cheque_paid_amount(doc, "USD")
+        self.assertGreater(result, 0)
 
 
 # ---------------------------------------------------------------------------

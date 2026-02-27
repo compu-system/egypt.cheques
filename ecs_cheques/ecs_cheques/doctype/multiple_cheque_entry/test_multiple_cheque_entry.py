@@ -42,6 +42,9 @@ def _make_frappe_stub():
 		pass
 	mod.ValidationError = _VE
 	mod.throw = lambda msg, exc=None: (_ for _ in ()).throw((exc or _VE)(msg))
+	import unittest.mock as _m
+	mod.get_cached_value = _m.MagicMock()
+	mod.get_all = _m.MagicMock(return_value=[])
 	return mod
 
 _frappe = _make_frappe_stub()

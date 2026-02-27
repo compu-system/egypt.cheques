@@ -93,7 +93,8 @@ def _get_cheque_paid_amount(doc, company_currency):
     ctr = frappe.db.get_value(
         "Cheque Table Receive",
         doc.cheque_table_no,
-        ["paid_amount", "target_exchange_rate", "exchange_rate_party_to_mop"],
+        ["paid_amount", "target_exchange_rate", "exchange_rate_party_to_mop",
+         "account_currency_from", "account_currency"],
         as_dict=True,
     )
     if not ctr:
@@ -115,7 +116,20 @@ def _get_cheque_paid_amount(doc, company_currency):
 
     exch_party_to_mop = flt(ctr.get("exchange_rate_party_to_mop") or 0)
 
-    if exch_party_to_mop > 0:
+    # Detect the "same-currency pair" scenario: both accounts share the same
+    # non-company currency (e.g. both ILS when company currency is USD).
+    # In that case exchange_rate_party_to_mop = 1.0 is meaningless for
+    # company-currency conversion and must not be used in the rate check.
+    ctr_from_currency = ctr.get("account_currency_from") or ""
+    ctr_to_currency = ctr.get("account_currency") or ""
+    same_non_company_currency = (
+        ctr_from_currency
+        and ctr_to_currency
+        and ctr_from_currency == ctr_to_currency
+        and ctr_from_currency != company_currency
+    )
+
+    if exch_party_to_mop > 0 and not same_non_company_currency:
         # Bidirectional rate path: company-currency base is
         # PE.paid_amount × source_exchange_rate (= exchange_rate_party_to_mop).
         pe_source = flt(doc.source_exchange_rate) or 1.0
@@ -127,6 +141,12 @@ def _get_cheque_paid_amount(doc, company_currency):
                     "Please recreate the Payment Entry."
                 ).format(pe_source, exch_party_to_mop, doc.cheque_table_no)
             )
+        return flt(flt(doc.paid_amount) * pe_source, 9)
+
+    if same_non_company_currency:
+        # Both accounts share the same non-company currency: trust the PE's
+        # source_exchange_rate (set by ERPNext validate) for company-currency conversion.
+        pe_source = flt(doc.source_exchange_rate) or 1.0
         return flt(flt(doc.paid_amount) * pe_source, 9)
 
     # Legacy path: company-currency base from ctr.paid_amount × target_exchange_rate.
