@@ -131,9 +131,15 @@ frappe.ui.form.on("Payment Entry", {
 });
 
 /**
- * Issue 2: when paid_from_account_currency == paid_to_account_currency,
- * ensure received_amount == paid_amount and target_exchange_rate == source_exchange_rate == 1.
- * Also hide exchange rate fields to avoid confusion.
+ * When paid_from_account_currency == paid_to_account_currency:
+ *   - Toggle exchange-rate field visibility (safe for all docstatus).
+ *   - On draft docs only, sync amounts:
+ *       • Force exchange rates to 1 ONLY when the shared account currency also
+ *         equals the company default currency.  For foreign-currency same-currency
+ *         pairs (e.g. both accounts ILS, company USD) the correct rate must come
+ *         from Currency Exchange – overriding it to 1 would produce wrong GL base
+ *         amounts.
+ *       • Always sync received_amount == paid_amount when currencies match.
  *
  * A re-entry guard (_ecs_syncing) prevents infinite-loop scenarios where
  * setting a field value triggers the same event handler recursively.
@@ -157,15 +163,20 @@ function ecs_sync_same_currency_amounts(frm) {
 
     frm._ecs_syncing = true;
     try {
-        // Force exchange rates to 1 when currencies match
-        if (frm.doc.source_exchange_rate !== 1) {
-            frappe.model.set_value(frm.doctype, frm.docname, "source_exchange_rate", 1);
-        }
-        if (frm.doc.target_exchange_rate !== 1) {
-            frappe.model.set_value(frm.doctype, frm.docname, "target_exchange_rate", 1);
+        // Only force exchange rates to 1 when account currency equals company
+        // default currency.  For foreign-currency same-currency pairs the rate
+        // must be preserved from Currency Exchange.
+        const company_currency = frm.doc.company_currency;
+        if (frm.doc.paid_from_account_currency === company_currency) {
+            if (frm.doc.source_exchange_rate !== 1) {
+                frappe.model.set_value(frm.doctype, frm.docname, "source_exchange_rate", 1);
+            }
+            if (frm.doc.target_exchange_rate !== 1) {
+                frappe.model.set_value(frm.doctype, frm.docname, "target_exchange_rate", 1);
+            }
         }
 
-        // Sync received_amount = paid_amount
+        // Sync received_amount = paid_amount whenever currencies match.
         if (frm.doc.paid_amount && frm.doc.received_amount !== frm.doc.paid_amount) {
             frappe.model.set_value(frm.doctype, frm.docname, "received_amount", frm.doc.paid_amount);
         }
